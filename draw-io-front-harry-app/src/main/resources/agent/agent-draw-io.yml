@@ -1,0 +1,123 @@
+ai:
+  agent:
+    config:
+      enabled: true
+      tables:
+        agentDrawIo:
+          app-name: agentDrawIo
+          agent:
+            agent-id: "${DRAW_IO_AGENT_ID:100005}"
+            agent-name: Draw.io 智能绘图
+            agent-desc: 对绘图诉求进行澄清、检索、规划、生成和质量检查
+          module:
+            ai-api:
+              base-uri: "${AI_BASE_URI}"
+              api-key: "${AI_API_KEY}"
+              completions-path: "${AI_COMPLETIONS_PATH:chat/completions}"
+              embeddings-path: "${AI_EMBEDDINGS_PATH:embeddings}"
+            chat-model:
+              model: "${AI_MODEL}"
+              tool-mcp-list:
+                - local:
+                    name: myToolCallbackProvider
+                # Optional SSE MCP template. Uncomment and set every value through environment variables.
+                # - sse:
+                #     name: "${DRAW_IO_MCP_SSE_NAME}"
+                #     base-uri: "${DRAW_IO_MCP_SSE_BASE_URI}"
+                #     sse-endpoint: "${DRAW_IO_MCP_SSE_ENDPOINT}"
+                #     request-timeout: "${DRAW_IO_MCP_SSE_REQUEST_TIMEOUT:30}"
+                # Optional stdio MCP template for repository or local-file research. Uncomment and set every value through environment variables.
+                # - stdio:
+                #     name: "${DRAW_IO_MCP_STDIO_NAME}"
+                #     request-timeout: "${DRAW_IO_MCP_STDIO_REQUEST_TIMEOUT:30}"
+                #     server-parameters:
+                #       command: "${DRAW_IO_MCP_STDIO_COMMAND}"
+                #       args:
+                #         - "${DRAW_IO_MCP_STDIO_ARG}"
+                #       env:
+                #         DRAW_IO_REPOSITORY: "${DRAW_IO_REPOSITORY}"
+                #         DRAW_IO_LOCAL_FILE_ROOT: "${DRAW_IO_LOCAL_FILE_ROOT}"
+              tool-skills-list:
+                - type: resource
+                  path: agent/skills
+            agents:
+              - name: RequestAnalystAgent
+                description: 澄清绘图需求并判断是否具备绘图前提。
+                instruction: |
+                  Analyze the user's diagram request. Identify goal, entities, relations, constraints, scope, diagram type hints, and missing facts.
+                  Return NEED_MORE_INFO whenever missing information would change entities, relationships, diagram scope, or diagram type. The clarification question must be minimal and specific.
+                  Return only this JSON contract:
+                  {"status":"READY|NEED_MORE_INFO","normalizedRequest":"","diagramGoal":"","diagramTypeHint":"","requiredFacts":[],"entities":[],"relations":[],"constraints":[],"clarificationQuestion":""}
+                output-key: request_analysis
+              - name: ContextResearchAgent
+                description: 按需通过 MCP 工具检索绘图所需上下文。
+                instruction: |
+                  Read {request_analysis}. Inspect available MCP tools and invoke them only for repository, local-file, external-fact, or explicit-search needs.
+                  Skip tool calls when the request is incomplete. Never invent unavailable facts; return BLOCKED when unavailable information prevents a reliable result.
+                  Return only this JSON contract:
+                  {"status":"COMPLETE|SKIPPED|BLOCKED","sourcesUsed":[],"facts":[],"constraints":[],"blockReason":""}
+                output-key: research_context
+              - name: DiagramStructureAgent
+                description: 独立选择图形类型并提出拓扑和布局建议。
+                instruction: |
+                  Read {request_analysis}. Choose among UML class, sequence, use-case, activity, state, flowchart, architecture, ER, and network topology diagrams.
+                  Independently propose the topology, groups, nodes, edges, direction, and layout rules that best communicate the request.
+                  Return only this JSON contract:
+                  {"status":"COMPLETE|SKIPPED","diagramType":"","direction":"TB|LR","groups":[],"nodes":[],"edges":[],"layoutRules":[]}
+                output-key: structure_analysis
+              - name: DiagramPlannerAgent
+                description: 合并需求、检索和结构分析，制定可绘制的图形计划。
+                instruction: |
+                  Merge {request_analysis}, {research_context}, and {structure_analysis} into a concrete diagram plan.
+                  Skip when the request is incomplete or research is blocked; do not guess missing entities or relations.
+                  Return only this JSON contract:
+                  {"status":"READY|SKIPPED","diagramType":"","canvas":{"direction":"TB|LR","width":0,"height":0},"groups":[],"nodes":[],"edges":[],"layoutRules":[],"skipReason":""}
+                output-key: diagram_plan
+              - name: DrawioGeneratorAgent
+                description: 生成完整、未压缩的 Draw.io XML 文档。
+                instruction: |
+                  Consume {diagram_plan}. When ready, return only a full uncompressed <mxfile> document, with no Markdown or explanation.
+                  The XML must include diagram, mxGraphModel, root mxCell values, unique IDs, vertex geometry, and source/target edges.
+                  Otherwise return the exact internal marker: SKIPPED: drawing prerequisites are incomplete
+                output-key: drawio_xml
+              - name: DrawioQualityAgent
+                description: 修复 Draw.io XML 的结构、语义与布局质量问题。
+                instruction: |
+                  Consume {drawio_xml}. Preserve the exact skip marker if present; otherwise return only corrected XML.
+                  Check XML structure, escaping, unique IDs, references, semantics, overlaps, text space, margins, isolated nodes, edge directions, edge crossings, node crossings, and unnecessary back edges.
+                  检查连线交叉、节点交叉和布局可读性，并保持完整未压缩的 <mxfile> 文档。
+                output-key: drawio_xml
+              - name: FinalResponseAgent
+                description: 仅向用户返回固定 JSON 响应协议。
+                instruction: |
+                  Consume {request_analysis}, {research_context}, {diagram_plan}, and {drawio_xml}.
+                  Return only one JSON object with exactly two fields: type and content. Do not return Markdown or explanation.
+                  Emit {"type":"user","content":""} for incomplete, blocked, or skipped states.
+                  Emit {"type":"drawio","content":""} only for a complete <mxfile> value, using standard JSON escaping for quotes, backslashes, newlines, and control characters.
+            agent-workflows:
+              - type: parallel
+                name: ParallelUnderstandingWorkflow
+                description: 并行获取上下文和图形结构建议。
+                sub-agents:
+                  - ContextResearchAgent
+                  - DiagramStructureAgent
+              - type: loop
+                name: DrawioQualityLoop
+                description: 对 Draw.io XML 进行固定两轮质量检查。
+                max-iterations: 2
+                sub-agents:
+                  - DrawioQualityAgent
+              - type: sequential
+                name: DrawioPipeline
+                description: 串行编排完整的 Draw.io 绘图流程。
+                sub-agents:
+                  - RequestAnalystAgent
+                  - ParallelUnderstandingWorkflow
+                  - DiagramPlannerAgent
+                  - DrawioGeneratorAgent
+                  - DrawioQualityLoop
+                  - FinalResponseAgent
+            runner:
+              agent-name: DrawioPipeline
+              response-agent-name: FinalResponseAgent
+              output-mode: FINAL_ONLY
