@@ -1,0 +1,158 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>AI Agent Scaffold - 对话工作台</title>
+    <style>
+      :root {
+        --page: #101010;
+        --sidebar: #171717;
+        --surface: #1d1d1d;
+        --surface-hover: #262626;
+        --text: #f3f3f3;
+        --muted: #9b9b9b;
+        --line: #303030;
+        --accent: #f1f1f1;
+        --accent-soft: rgba(255, 255, 255, 0.1);
+        --user: #ededed;
+        --danger: #ffaaa5;
+      }
+
+      * { box-sizing: border-box; }
+      body { min-height: 100dvh; margin: 0; color: var(--text); font-family: "Segoe UI", "Microsoft YaHei", sans-serif; background: var(--page); }
+      .app { height: 100dvh; display: grid; grid-template-columns: 300px minmax(0, 1fr); overflow: hidden; }
+
+      .sidebar { display: flex; flex-direction: column; padding: 24px 18px 18px; border-right: 1px solid var(--line); background: var(--sidebar); }
+      .brand { display: flex; align-items: center; gap: 11px; padding: 0 6px; font-weight: 750; letter-spacing: 0.01em; }
+      .brand-mark { display: grid; width: 30px; height: 30px; place-items: center; border: 1px solid #666; border-radius: 7px; color: var(--accent); font-size: 12px; }
+      .sidebar-title { margin: 38px 6px 10px; color: var(--muted); font-size: 12px; font-weight: 700; letter-spacing: 0.08em; }
+      .agent-select { width: 100%; min-height: 44px; border: 1px solid var(--line); border-radius: 7px; padding: 0 12px; outline: none; color: var(--text); font: inherit; background: var(--surface); }
+      .agent-select:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+      .agent-description { min-height: 58px; margin: 12px 6px; color: var(--muted); font-size: 13px; line-height: 1.65; }
+      .session { margin-top: auto; padding: 16px; border: 1px solid var(--line); border-radius: 7px; background: transparent; }
+      .session-label { color: var(--muted); font-size: 12px; }
+      .session-user { margin-top: 7px; font-weight: 700; }
+      .session-id { margin-top: 8px; overflow: hidden; color: var(--accent); font: 12px Consolas, monospace; text-overflow: ellipsis; white-space: nowrap; }
+      .logout { width: 100%; min-height: 38px; margin-top: 18px; border: 1px solid var(--line); border-radius: 7px; color: #d8d8d8; font: inherit; cursor: pointer; background: transparent; }
+      .logout:hover { border-color: var(--accent); color: var(--accent); }
+
+      .workspace { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0, 1fr) auto; }
+      .topbar { display: flex; align-items: center; justify-content: space-between; min-height: 76px; padding: 0 34px; border-bottom: 1px solid var(--line); }
+      .topbar h1 { margin: 0; font-size: 20px; letter-spacing: -0.025em; }
+      .status { display: flex; align-items: center; gap: 8px; color: var(--muted); font-size: 13px; }
+      .status-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); }
+      .messages { min-height: 0; overflow-y: auto; padding: 34px clamp(20px, 6vw, 100px); scrollbar-color: rgba(98, 217, 177, 0.55) transparent; }
+      .message-list { display: grid; max-width: 920px; margin: 0 auto; gap: 20px; }
+      .empty { max-width: 620px; margin: 13vh auto 0; text-align: center; }
+      .empty h2 { margin: 0; font-size: clamp(30px, 4vw, 48px); letter-spacing: -0.055em; }
+      .empty p { margin: 16px auto 0; color: var(--muted); line-height: 1.75; }
+      .message-row { display: grid; grid-template-columns: 42px minmax(0, 1fr); gap: 13px; align-items: start; }
+      .message-row.user { grid-template-columns: minmax(0, 1fr) 42px; }
+      .message-row.user .bubble { justify-self: end; color: #151515; background: var(--user); }
+      .message-row.user .avatar { grid-column: 2; }
+      .message-row.user .bubble { grid-column: 1; grid-row: 1; }
+      .avatar { display: grid; width: 38px; height: 38px; place-items: center; border: 1px solid #464646; border-radius: 7px; color: var(--accent); font-size: 12px; font-weight: 800; background: var(--surface); }
+      .bubble { width: fit-content; max-width: min(760px, 100%); padding: 14px 17px; border: 1px solid var(--line); border-radius: 8px; color: #ededed; line-height: 1.75; background: var(--surface); overflow-wrap: anywhere; }
+      .message-row.user .bubble { white-space: pre-wrap; }
+      .bubble p { margin: 0 0 12px; }
+      .bubble p:last-child { margin-bottom: 0; }
+      .bubble h1, .bubble h2, .bubble h3 { margin: 18px 0 8px; line-height: 1.35; }
+      .bubble h1 { font-size: 22px; }
+      .bubble h2 { font-size: 19px; }
+      .bubble h3 { font-size: 16px; }
+      .bubble ul, .bubble ol { margin: 8px 0 12px; padding-left: 22px; }
+      .bubble li + li { margin-top: 4px; }
+      .bubble code { padding: 2px 5px; border-radius: 5px; color: #c8f4e6; font: 0.9em Consolas, monospace; background: rgba(98, 217, 177, 0.12); }
+      .bubble pre { overflow-x: auto; margin: 12px 0; padding: 13px; border: 1px solid var(--line); border-radius: 9px; background: #0d1b1e; }
+      .bubble pre code { padding: 0; color: #d9ebe6; background: transparent; }
+      .bubble blockquote { margin: 12px 0; padding-left: 12px; border-left: 3px solid var(--accent); color: #bed0cb; }
+      .bubble a { color: #84e6c6; }
+      .markdown-table-wrap { overflow-x: auto; margin: 12px 0; border: 1px solid var(--line); border-radius: 9px; }
+      .bubble table { width: 100%; min-width: 480px; border-collapse: collapse; font-size: 14px; }
+      .bubble th, .bubble td { padding: 10px 12px; text-align: left; vertical-align: top; border-bottom: 1px solid var(--line); }
+      .bubble th { color: #d9f8ed; font-weight: 700; background: rgba(98, 217, 177, 0.1); }
+      .bubble tr:last-child td { border-bottom: 0; }
+      .stream-bubble { min-width: min(620px, 100%); }
+      .trace-panel { margin-bottom: 14px; border: 1px solid #3a3a3a; border-radius: 7px; background: #181818; }
+      .trace-panel[hidden] { display: none; }
+      .trace-summary { padding: 10px 12px; color: var(--muted); font-size: 13px; font-weight: 700; cursor: pointer; user-select: none; }
+      .trace-summary:hover { color: var(--text); }
+      .trace-list { padding: 0 12px 12px; border-top: 1px solid var(--line); }
+      .trace-item { padding: 12px 0 2px; }
+      .trace-item + .trace-item { margin-top: 8px; border-top: 1px solid var(--line); }
+      .trace-agent { color: #d9f8ed; font-size: 12px; font-weight: 800; letter-spacing: 0.02em; }
+      .trace-content { margin-top: 7px; color: #b8c4c0; font-size: 13px; line-height: 1.65; }
+      .trace-content p { margin-bottom: 8px; }
+      .stream-placeholder { color: var(--muted); font-style: italic; }
+      .stream-cursor { display: inline-block; width: 8px; height: 1.1em; margin-left: 4px; vertical-align: -0.14em; background: var(--accent); animation: stream-blink 0.9s steps(2, start) infinite; }
+      .stream-error { margin-top: 10px; color: var(--danger); font-size: 13px; }
+      .message-row.error .bubble { border-color: rgba(255, 170, 165, 0.42); }
+      @keyframes stream-blink { 50% { opacity: 0.2; } }
+      @media (prefers-reduced-motion: reduce) { .stream-cursor { animation: none; } }
+      .composer-wrap { padding: 18px clamp(20px, 6vw, 100px) 28px; border-top: 1px solid var(--line); background: rgba(10, 20, 23, 0.88); }
+      .composer { display: grid; grid-template-columns: minmax(0, 1fr) auto; max-width: 920px; margin: 0 auto; gap: 12px; align-items: end; }
+      textarea { width: 100%; min-height: 56px; max-height: 160px; resize: vertical; border: 1px solid var(--line); border-radius: 8px; padding: 16px; outline: none; color: var(--text); font: inherit; line-height: 1.45; background: var(--surface); }
+      textarea:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+      .send { min-width: 94px; min-height: 56px; border: 0; border-radius: 8px; color: #121212; font: inherit; font-weight: 800; cursor: pointer; background: var(--accent); }
+      .send:hover:not(:disabled) { background: #d6d6d6; }
+      .send:disabled { opacity: 0.52; cursor: wait; }
+      .error { max-width: 920px; margin: 10px auto 0; color: var(--danger); font-size: 13px; }
+
+      @media (max-width: 760px) {
+        .app { height: auto; min-height: 100dvh; grid-template-columns: 1fr; overflow: visible; }
+        .sidebar { gap: 10px; padding: 16px; border-right: 0; border-bottom: 1px solid var(--line); }
+        .sidebar-title { margin: 12px 0 0; }
+        .agent-description { min-height: auto; margin: 0; }
+        .session { margin-top: 4px; }
+        .logout { margin-top: 10px; }
+        .workspace { min-height: 72dvh; }
+        .topbar { min-height: 62px; padding: 0 18px; }
+        .messages { min-height: 48dvh; padding: 22px 16px; }
+        .composer-wrap { padding: 14px 16px 18px; }
+        .composer { grid-template-columns: 1fr; }
+        .send { width: 100%; }
+      }
+    </style>
+  </head>
+  <body>
+    <main class="app">
+      <aside class="sidebar">
+        <div class="brand"><span class="brand-mark">AI</span> AI Agent Scaffold</div>
+        <p class="sidebar-title">选择智能体</p>
+        <select id="agentSelect" class="agent-select" aria-label="选择智能体" disabled>
+          <option>正在加载智能体...</option>
+        </select>
+        <p id="agentDescription" class="agent-description">将从服务端加载可用智能体。</p>
+        <div class="session">
+          <div class="session-label">当前登录用户</div>
+          <div id="currentUser" class="session-user"></div>
+          <div id="currentSession" class="session-id">尚未创建会话</div>
+        </div>
+        <button id="logoutButton" class="logout" type="button">退出登录</button>
+      </aside>
+
+      <section class="workspace">
+        <header class="topbar">
+          <h1 id="agentTitle">智能体对话</h1>
+          <div class="status"><span class="status-dot"></span><span id="statusText">准备连接</span></div>
+        </header>
+        <section id="messages" class="messages" aria-live="polite">
+          <div id="messageList" class="message-list">
+            <div id="emptyState" class="empty"><h2>开始一次有目标的对话</h2><p>选择智能体后输入问题。系统会为本次提问创建独立会话，并保存当前登录用户作为会话归属。</p></div>
+          </div>
+        </section>
+        <div class="composer-wrap">
+          <form id="chatForm" class="composer">
+            <textarea id="messageInput" placeholder="请输入你的问题，Enter 发送，Shift + Enter 换行" aria-label="对话内容" disabled></textarea>
+            <button id="sendButton" class="send" type="submit" disabled>发送</button>
+          </form>
+          <div id="errorMessage" class="error" role="alert"></div>
+        </div>
+      </section>
+    </main>
+    <script src="js/config.js"></script>
+    <script src="js/sse-client.js"></script>
+    <script src="js/index.js"></script>
+  </body>
+</html>
