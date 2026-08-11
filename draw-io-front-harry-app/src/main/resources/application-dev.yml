@@ -47,3 +47,9 @@ logging:
   level:
     root: info
   config: classpath:logback-spring.xml
+
+supabase:
+  auth:
+    issuer: ${SUPABASE_ISSUER}
+    jwks-uri: ${SUPABASE_JWKS_URI}
+    allowed-user-ids: ${AI_ALLOWED_USER_IDS:}
