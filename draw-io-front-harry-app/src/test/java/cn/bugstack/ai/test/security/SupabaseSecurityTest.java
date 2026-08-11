@@ -2,6 +2,7 @@ package cn.bugstack.ai.test.security;
 
 import cn.bugstack.ai.domain.agent.service.IChatService;
 import cn.bugstack.ai.trigger.http.AgentServiceController;
+import cn.bugstack.ai.trigger.security.AuthenticatedUserProvider;
 import cn.bugstack.ai.trigger.security.JsonAccessDeniedHandler;
 import cn.bugstack.ai.trigger.security.JsonAuthenticationEntryPoint;
 import cn.bugstack.ai.trigger.security.SupabaseSecurityConfig;
@@ -34,7 +35,8 @@ import static org.springframework.security.test.web.servlet.request.SecurityMock
 @Import({
         SupabaseSecurityConfig.class,
         JsonAuthenticationEntryPoint.class,
-        JsonAccessDeniedHandler.class
+        JsonAccessDeniedHandler.class,
+        AuthenticatedUserProvider.class
 })
 @TestPropertySource(properties = {
         "supabase.auth.issuer=https://test-project.invalid/auth/v1",

@@ -12,6 +12,7 @@ import cn.bugstack.ai.domain.agent.model.valobj.AgentChatResultVO;
 import cn.bugstack.ai.domain.agent.service.IChatService;
 import cn.bugstack.ai.types.enums.ResponseCode;
 import cn.bugstack.ai.types.exception.AppException;
+import cn.bugstack.ai.trigger.security.AuthenticatedUserProvider;
 import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.CrossOrigin;
@@ -35,6 +36,9 @@ public class AgentServiceController implements IAgentService {
     @Resource
     private IChatService chatService;
 
+    @Resource
+    private AuthenticatedUserProvider authenticatedUserProvider;
+
     @RequestMapping(value = "query_ai_agent_config_list", method = RequestMethod.GET)
 
     @Override
@@ -56,7 +60,7 @@ public class AgentServiceController implements IAgentService {
                     .data(responseDTOS)
                     .build();
 
-        } catch(AppException e) {
+        } catch (AppException e) {
             log.error("查询智能体配置列表异常", e);
             return Response.<List<AiAgentConfigResponseDTO>>builder()
                     .code(e.getCode())
@@ -74,9 +78,12 @@ public class AgentServiceController implements IAgentService {
     @RequestMapping(value = "create_session", method = RequestMethod.POST)
     @Override
     public Response<CreateSessionResponseDTO> createSession(@RequestBody CreateSessionRequestDTO requestDTO) {
+
+        String userId = authenticatedUserProvider.requireUserId();
+
         try {
-            log.info("创建会话 agentId:{} userId:{}", requestDTO.getAgentId(), requestDTO.getUserId());
-            String sessionId = chatService.createSession(requestDTO.getAgentId(), requestDTO.getUserId());
+            log.info("创建会话 agentId:{} userId:{}", requestDTO.getAgentId(), userId);
+            String sessionId = chatService.createSession(requestDTO.getAgentId(), userId);
 
             CreateSessionResponseDTO responseDTO = new CreateSessionResponseDTO();
             responseDTO.setSessionId(sessionId);
@@ -87,13 +94,13 @@ public class AgentServiceController implements IAgentService {
                     .data(responseDTO)
                     .build();
         } catch (AppException e) {
-            log.error("查询智能体配置列表异常", e);
+            log.error("创建会话异常 agentId:{}", requestDTO.getAgentId(), e);
             return Response.<CreateSessionResponseDTO>builder()
                     .code(e.getCode())
                     .info(e.getInfo())
                     .build();
         } catch (Exception e) {
-            log.error("创建会话失败 agentId:{} userId:{}", requestDTO.getAgentId(), requestDTO.getUserId(), e);
+            log.error("创建会话失败 agentId:{}", requestDTO.getAgentId(), e);
             return Response.<CreateSessionResponseDTO>builder()
                     .code(ResponseCode.UN_ERROR.getCode())
                     .info(ResponseCode.UN_ERROR.getInfo())
@@ -103,43 +110,69 @@ public class AgentServiceController implements IAgentService {
 
     @RequestMapping(value = "chat", method = RequestMethod.POST)
     @Override
-    public Response<ChatResponseDTO> chat(@RequestBody ChatRequestDTO requestDTO) {
+    public Response<ChatResponseDTO> chat(
+            @RequestBody ChatRequestDTO requestDTO) {
+
+        String userId = authenticatedUserProvider.requireUserId();
+
         try {
-            log.info("智能体对话 agentId:{} userId:{}", requestDTO.getAgentId(), requestDTO.getUserId());
+            log.info(
+                    "智能体对话 agentId:{} userId:{}",
+                    requestDTO.getAgentId(),
+                    userId);
+
             String sessionId = requestDTO.getSessionId();
+
             if (sessionId == null || sessionId.isEmpty()) {
-                sessionId = chatService.createSession(requestDTO.getAgentId(), requestDTO.getUserId());
+                sessionId = chatService.createSession(
+                        requestDTO.getAgentId(),
+                        userId);
             }
 
             AgentChatResultVO result = chatService.handleMessage(
                     requestDTO.getAgentId(),
-                    requestDTO.getUserId(),
+                    userId,
                     sessionId,
                     requestDTO.getMessage());
 
             ChatResponseDTO responseDTO = new ChatResponseDTO();
             responseDTO.setContent(result.getContent());
-            responseDTO.setTraces(result.getTraces().stream().map(trace -> {
-                ChatResponseDTO.Trace traceDTO = new ChatResponseDTO.Trace();
-                traceDTO.setAgentName(trace.getAgentName());
-                traceDTO.setContent(trace.getContent());
-                traceDTO.setCompleted(trace.isCompleted());
-                return traceDTO;
-            }).toList());
+
+            responseDTO.setTraces(
+                    result.getTraces().stream()
+                            .map(trace -> {
+                                ChatResponseDTO.Trace traceDTO =
+                                        new ChatResponseDTO.Trace();
+
+                                traceDTO.setAgentName(trace.getAgentName());
+                                traceDTO.setContent(trace.getContent());
+                                traceDTO.setCompleted(trace.isCompleted());
+
+                                return traceDTO;
+                            })
+                            .toList());
 
             return Response.<ChatResponseDTO>builder()
                     .code(ResponseCode.SUCCESS.getCode())
                     .info(ResponseCode.SUCCESS.getInfo())
                     .data(responseDTO)
                     .build();
-        } catch (AppException e) {
-            log.error("智能体对话异常", e);
+        } catch (AppException exception) {
+            log.error(
+                    "智能体对话业务异常 agentId:{}",
+                    requestDTO.getAgentId(),
+                    exception);
+
             return Response.<ChatResponseDTO>builder()
-                    .code(e.getCode())
-                    .info(e.getInfo())
+                    .code(exception.getCode())
+                    .info(exception.getInfo())
                     .build();
-        } catch (Exception e) {
-            log.error("智能体对话失败 agentId:{} userId:{}", requestDTO.getAgentId(), requestDTO.getUserId(), e);
+        } catch (Exception exception) {
+            log.error(
+                    "智能体对话失败 agentId:{}",
+                    requestDTO.getAgentId(),
+                    exception);
+
             return Response.<ChatResponseDTO>builder()
                     .code(ResponseCode.UN_ERROR.getCode())
                     .info(ResponseCode.UN_ERROR.getInfo())
@@ -159,34 +192,42 @@ public class AgentServiceController implements IAgentService {
         emitter.onTimeout(subscription::dispose);
         emitter.onError(error -> subscription.dispose());
         try {
-            log.info("流式对话 agentId:{} userId:{} sessionId:{} message:{}", requestDTO.getAgentId(), requestDTO.getUserId(), requestDTO.getSessionId(), requestDTO.getMessage());
+            String userId = authenticatedUserProvider.requireUserId();
+
+            log.info(
+                    "流式对话 agentId:{} userId:{} sessionId:{}",
+                    requestDTO.getAgentId(),
+                    userId,
+                    requestDTO.getSessionId()
+            );
+
             subscription.set(chatService.handleMessageStream(
                     requestDTO.getAgentId(),
-                    requestDTO.getUserId(),
+                    userId,
                     requestDTO.getSessionId(),
                     requestDTO.getMessage()
-                    ).subscribe(
-                            output  -> {
-                                try {
-                                    emitter.send(SseEmitter.event()
-                                            .name(output.getType().name().toLowerCase(Locale.ROOT))
-                                            .data(output, MediaType.APPLICATION_JSON)
-                                    );
-                                } catch (Exception e) {
-                                    log.error("流式对话发送失败", e);
-                                    subscription.dispose();
-                                    emitter.completeWithError(e);
-                                }
-                            },
-                            error -> {
-                                subscription.dispose();
-                                emitter.completeWithError(error);
-                            },
-                            () -> {
-                                subscription.dispose();
-                                emitter.complete();
-                            }
-                    ));
+            ).subscribe(
+                    output -> {
+                        try {
+                            emitter.send(SseEmitter.event()
+                                    .name(output.getType().name().toLowerCase(Locale.ROOT))
+                                    .data(output, MediaType.APPLICATION_JSON)
+                            );
+                        } catch (Exception e) {
+                            log.error("流式对话发送失败", e);
+                            subscription.dispose();
+                            emitter.completeWithError(e);
+                        }
+                    },
+                    error -> {
+                        subscription.dispose();
+                        emitter.completeWithError(error);
+                    },
+                    () -> {
+                        subscription.dispose();
+                        emitter.complete();
+                    }
+            ));
         } catch (Exception e) {
             log.error("流式对话失败", e);
             emitter.completeWithError(e);
