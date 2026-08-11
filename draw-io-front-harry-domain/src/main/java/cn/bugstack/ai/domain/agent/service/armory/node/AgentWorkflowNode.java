@@ -6,6 +6,7 @@ import cn.bugstack.ai.domain.agent.model.valobj.AiAgentRegisterVO;
 import cn.bugstack.ai.domain.agent.model.valobj.enums.AgentTypeEnum;
 import cn.bugstack.ai.domain.agent.service.armory.AbstractArmorySupport;
 import cn.bugstack.ai.domain.agent.service.armory.factory.DefaultArmoryFactory;
+import cn.bugstack.ai.domain.agent.service.armory.node.workflow.ConditionalAgentNode;
 import cn.bugstack.ai.domain.agent.service.armory.node.workflow.LoopAgentNode;
 import cn.bugstack.ai.domain.agent.service.armory.node.workflow.ParallelAgentNode;
 import cn.bugstack.ai.domain.agent.service.armory.node.workflow.RunnerNode;
@@ -27,6 +28,8 @@ public class AgentWorkflowNode extends AbstractArmorySupport {
     private ParallelAgentNode parallelAgentNode;
     @Resource
     private SequentialAgentNode sequentialAgentNode;
+    @Resource
+    private ConditionalAgentNode conditionalAgentNode;
 
     @Resource
     private RunnerNode runnerNode;
@@ -73,6 +76,7 @@ public class AgentWorkflowNode extends AbstractArmorySupport {
             case "loopAgentNode" -> loopAgentNode;
             case "parallelAgentNode" -> parallelAgentNode;
             case "sequentialAgentNode" -> sequentialAgentNode;
+            case "conditionalAgentNode" -> conditionalAgentNode;
             default -> runnerNode;
         };
     }

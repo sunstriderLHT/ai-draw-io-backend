@@ -127,6 +127,9 @@ public class AiAgentConfigTableVO {
             private List<String> subAgents;
             private String description;
             private Integer maxIterations = 3;
+            private String conditionStateKey;
+            private String conditionJsonField;
+            private String conditionExpectedValue;
         }
 
         @Data
