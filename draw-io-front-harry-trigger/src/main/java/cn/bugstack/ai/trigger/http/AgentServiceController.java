@@ -17,6 +17,7 @@ import lombok.extern.slf4j.Slf4j;
 import org.springframework.http.MediaType;
 import org.springframework.web.bind.annotation.CrossOrigin;
 import org.springframework.web.bind.annotation.RequestBody;
+import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RequestMethod;
 import org.springframework.web.bind.annotation.RestController;
@@ -38,6 +39,9 @@ public class AgentServiceController implements IAgentService {
 
     @Resource
     private AuthenticatedUserProvider authenticatedUserProvider;
+
+    @Resource
+    private MeteredAgentChatFacade meteredAgentChatFacade;
 
     @RequestMapping(value = "query_ai_agent_config_list", method = RequestMethod.GET)
 
@@ -110,8 +114,8 @@ public class AgentServiceController implements IAgentService {
 
     @RequestMapping(value = "chat", method = RequestMethod.POST)
     @Override
-    public Response<ChatResponseDTO> chat(
-            @RequestBody ChatRequestDTO requestDTO) {
+    public Response<ChatResponseDTO> chat(@RequestHeader("Idempotency-Key") String requestId,
+                                          @RequestBody ChatRequestDTO requestDTO) {
 
         String userId = authenticatedUserProvider.requireUserId();
 
@@ -121,19 +125,17 @@ public class AgentServiceController implements IAgentService {
                     requestDTO.getAgentId(),
                     userId);
 
-            String sessionId = requestDTO.getSessionId();
+            MeteredChatResult meteredResult =
+                    meteredAgentChatFacade.chat(
+                            userId,
+                            requestId,
+                            requestDTO.getAgentId(),
+                            requestDTO.getSessionId(),
+                            requestDTO.getMessage()
+                    );
 
-            if (sessionId == null || sessionId.isEmpty()) {
-                sessionId = chatService.createSession(
-                        requestDTO.getAgentId(),
-                        userId);
-            }
+            AgentChatResultVO result = meteredResult.result();
 
-            AgentChatResultVO result = chatService.handleMessage(
-                    requestDTO.getAgentId(),
-                    userId,
-                    sessionId,
-                    requestDTO.getMessage());
 
             ChatResponseDTO responseDTO = new ChatResponseDTO();
             responseDTO.setContent(result.getContent());
@@ -151,6 +153,10 @@ public class AgentServiceController implements IAgentService {
                                 return traceDTO;
                             })
                             .toList());
+
+            responseDTO.setRemaining(
+                    meteredResult.remaining()
+            );
 
             return Response.<ChatResponseDTO>builder()
                     .code(ResponseCode.SUCCESS.getCode())

@@ -6,6 +6,7 @@ import cn.bugstack.ai.trigger.security.AuthenticatedUserProvider;
 import cn.bugstack.ai.trigger.security.JsonAccessDeniedHandler;
 import cn.bugstack.ai.trigger.security.JsonAuthenticationEntryPoint;
 import cn.bugstack.ai.trigger.security.SupabaseSecurityConfig;
+import cn.bugstack.ai.trigger.http.MeteredAgentChatFacade;
 import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -55,6 +56,9 @@ public class SupabaseSecurityTest {
     // Controller 依赖 IChatService，但 Web 切片不会加载真实业务服务，所以提供一个假的对象
     @MockitoBean
     private IChatService chatService;
+
+    @MockitoBean
+    private MeteredAgentChatFacade meteredAgentChatFacade;
 
     @Test
     public void shouldReturnJson401WhenTokenIsMissing() throws Exception {

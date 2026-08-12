@@ -5,6 +5,8 @@ import cn.bugstack.ai.domain.agent.model.valobj.AgentOutputEventVO;
 import cn.bugstack.ai.domain.agent.service.IChatService;
 import cn.bugstack.ai.domain.agent.service.armory.matter.mcp.server.MyTestMcpService;
 import cn.bugstack.ai.trigger.http.AgentServiceController;
+import cn.bugstack.ai.trigger.http.MeteredAgentChatFacade;
+import cn.bugstack.ai.trigger.http.MeteredChatResult;
 import cn.bugstack.ai.trigger.security.AuthenticatedUserProvider;
 import cn.bugstack.ai.trigger.security.JsonAccessDeniedHandler;
 import cn.bugstack.ai.trigger.security.JsonAuthenticationEntryPoint;
@@ -56,6 +58,9 @@ public class TrustedUserIdentityTest {
     private static final String AUTHENTICATED_USER_ID =
             "22222222-2222-2222-2222-222222222222";
 
+    private static final String REQUEST_ID =
+            "33333333-3333-3333-3333-333333333333";
+
     @Autowired
     private MockMvc mockMvc;
 
@@ -64,6 +69,9 @@ public class TrustedUserIdentityTest {
 
     @MockitoBean
     private MyTestMcpService myTestMcpService;
+
+    @MockitoBean
+    private MeteredAgentChatFacade meteredAgentChatFacade;
 
     @Test
     public void shouldUseJwtSubjectInsteadOfRequestUserId() throws Exception {
@@ -96,59 +104,83 @@ public class TrustedUserIdentityTest {
     }
 
     @Test
-    public void shouldUseJwtSubjectForSynchronousChat() throws Exception {
-        AgentChatResultVO trustedResult = AgentChatResultVO.builder()
-                .content("trusted-answer")
-                .traces(List.of())
-                .build();
+    public void shouldUseTrustedIdentityAndIdempotencyKeyForSynchronousChat()
+            throws Exception {
 
-        AgentChatResultVO attackerResult = AgentChatResultVO.builder()
-                .content("attacker-answer")
-                .traces(List.of())
-                .build();
+        AgentChatResultVO trustedResult =
+                AgentChatResultVO.builder()
+                        .content("trusted-answer")
+                        .traces(List.of())
+                        .build();
 
+        /*
+         * 暂时保留旧调用的桩，使当前 Controller 能走到响应断言。
+         * GREEN 后会用 never() 证明 Controller 不再直接调用它。
+         */
         when(chatService.handleMessage(
                 "100001",
                 AUTHENTICATED_USER_ID,
                 "session-1",
-                "hello"))
-                .thenReturn(trustedResult);
+                "hello"
+        )).thenReturn(trustedResult);
 
-        when(chatService.handleMessage(
+        when(meteredAgentChatFacade.chat(
+                AUTHENTICATED_USER_ID,
+                REQUEST_ID,
                 "100001",
-                "attacker",
                 "session-1",
-                "hello"))
-                .thenReturn(attackerResult);
+                "hello"
+        )).thenReturn(
+                new MeteredChatResult(
+                        trustedResult,
+                        2
+                )
+        );
 
         mockMvc.perform(post("/api/v1/chat")
                         .with(jwt().jwt(token -> token
                                 .subject(AUTHENTICATED_USER_ID)
                                 .claim("role", "authenticated")))
+                        .header(
+                                "Idempotency-Key",
+                                REQUEST_ID
+                        )
                         .contentType(MediaType.APPLICATION_JSON)
                         .content("""
-                            {
-                              "agentId": "100001",
-                              "userId": "attacker",
-                              "sessionId": "session-1",
-                              "message": "hello"
-                            }
-                            """))
+                        {
+                          "agentId": "100001",
+                          "userId": "attacker",
+                          "sessionId": "session-1",
+                          "message": "hello"
+                        }
+                        """))
                 .andExpect(status().isOk())
                 .andExpect(jsonPath("$.data.content")
-                        .value("trusted-answer"));
+                        .value("trusted-answer"))
+                .andExpect(jsonPath("$.data.remaining")
+                        .value(2));
 
-        verify(chatService).handleMessage(
+        verify(meteredAgentChatFacade).chat(
+                AUTHENTICATED_USER_ID,
+                REQUEST_ID,
+                "100001",
+                "session-1",
+                "hello"
+        );
+
+        verify(chatService, never()).handleMessage(
                 "100001",
                 AUTHENTICATED_USER_ID,
                 "session-1",
-                "hello");
+                "hello"
+        );
 
         verify(chatService, never()).handleMessage(
                 "100001",
                 "attacker",
                 "session-1",
-                "hello");
+                "hello"
+        );
     }
 
     @Test

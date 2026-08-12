@@ -11,6 +11,8 @@ public class ChatResponseDTO {
 
     private List<Trace> traces;
 
+    private Integer remaining;
+
     @Data
     public static class Trace {
         private String agentName;

@@ -16,6 +16,7 @@ public enum ResponseCode {
     AI_QUOTA_EXHAUSTED("0004", "额度不足"),
     AI_REQUEST_IN_PROGRESS("0005", "相同请求正在处理中"),
     AI_REQUEST_ALREADY_COMPLETED("0006", "相同请求已处理完成"),
+    AI_EMPTY_RESPONSE("0007", "模型没有返回有效内容"),
 
     E0001("E0001", "智能体ID不存在"),
     E0002("E0002", "智能体MCP配置不在可加载范围"),

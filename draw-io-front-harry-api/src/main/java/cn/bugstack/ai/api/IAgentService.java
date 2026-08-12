@@ -21,7 +21,7 @@ public interface IAgentService {
 
     Response<CreateSessionResponseDTO> createSession(CreateSessionRequestDTO requestDTO);
 
-    Response<ChatResponseDTO> chat(ChatRequestDTO chatRequestDTO);
+    Response<ChatResponseDTO> chat(String requestId, ChatRequestDTO chatRequestDTO);
 
     ResponseBodyEmitter chatStream(ChatRequestDTO chatRequestDTO);
 
