@@ -73,6 +73,8 @@ public class DrawioAgentConfigTest {
         assertEquals("status", property(sources, workflows + "[2].condition-json-field"));
         assertEquals("READY", property(sources, workflows + "[2].condition-expected-value"));
 
+        assertEquals("FinalResponseAgent",
+                property(sources, "ai.agent.config.tables.agentDrawIo.module.agents[6].name"));
         assertEquals("sequential", property(sources, workflows + "[3].type"));
         assertEquals("DrawioPipeline", property(sources, workflows + "[3].name"));
         assertEquals("RequestAnalystAgent", property(sources, workflows + "[3].sub-agents[0]"));

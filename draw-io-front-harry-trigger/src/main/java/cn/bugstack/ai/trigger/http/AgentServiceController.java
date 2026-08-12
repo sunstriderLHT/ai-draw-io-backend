@@ -35,6 +35,9 @@ public class AgentServiceController implements IAgentService {
     @Resource
     private IChatService chatService;
 
+    @Resource
+    private AgentStreamHeartbeatScheduler heartbeatScheduler;
+
     @RequestMapping(value = "query_ai_agent_config_list", method = RequestMethod.GET)
 
     @Override
@@ -153,43 +156,33 @@ public class AgentServiceController implements IAgentService {
             produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     @Override
     public ResponseBodyEmitter chatStream(@RequestBody ChatRequestDTO requestDTO) {
-        SseEmitter emitter = new SseEmitter(10 * 60 * 1000L);
-        AgentStreamSubscription subscription = new AgentStreamSubscription();
-        emitter.onCompletion(subscription::dispose);
-        emitter.onTimeout(subscription::dispose);
-        emitter.onError(error -> subscription.dispose());
+        SseEmitter emitter = new SseEmitter(20 * 60 * 1000L);
+        AgentStreamLifecycle lifecycle = new AgentStreamLifecycle(
+                emitter,
+                requestDTO.getAgentId(),
+                requestDTO.getUserId(),
+                requestDTO.getSessionId());
+        emitter.onCompletion(lifecycle::clientCompletedConnection);
+        emitter.onTimeout(lifecycle::timeout);
+        emitter.onError(lifecycle::clientDisconnected);
         try {
+            lifecycle.registerHeartbeat(heartbeatScheduler.schedule(lifecycle::heartbeat));
             log.info("流式对话 agentId:{} userId:{} sessionId:{} message:{}", requestDTO.getAgentId(), requestDTO.getUserId(), requestDTO.getSessionId(), requestDTO.getMessage());
-            subscription.set(chatService.handleMessageStream(
+            lifecycle.registerSubscription(chatService.handleMessageStream(
                     requestDTO.getAgentId(),
                     requestDTO.getUserId(),
                     requestDTO.getSessionId(),
                     requestDTO.getMessage()
                     ).subscribe(
-                            output  -> {
-                                try {
-                                    emitter.send(SseEmitter.event()
+                            output -> lifecycle.send(SseEmitter.event()
                                             .name(output.getType().name().toLowerCase(Locale.ROOT))
                                             .data(output, MediaType.APPLICATION_JSON)
-                                    );
-                                } catch (Exception e) {
-                                    log.error("流式对话发送失败", e);
-                                    subscription.dispose();
-                                    emitter.completeWithError(e);
-                                }
-                            },
-                            error -> {
-                                subscription.dispose();
-                                emitter.completeWithError(error);
-                            },
-                            () -> {
-                                subscription.dispose();
-                                emitter.complete();
-                            }
+                                    ),
+                            lifecycle::fail,
+                            lifecycle::completeNormally
                     ));
         } catch (Exception e) {
-            log.error("流式对话失败", e);
-            emitter.completeWithError(e);
+            lifecycle.fail(e);
         }
         return emitter;
     }

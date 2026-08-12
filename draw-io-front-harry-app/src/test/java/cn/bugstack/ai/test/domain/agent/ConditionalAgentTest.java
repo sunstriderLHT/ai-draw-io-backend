@@ -33,6 +33,44 @@ public class ConditionalAgentTest {
     }
 
     @Test
+    public void markdownFencedReadyStateRunsChildren() {
+        CountingAgent child = new CountingAgent("DrawingChild");
+        ConditionalAgent agent = conditionalAgent(child);
+        String fencedAnalysis = "```json\n"
+                + "{\n"
+                + "  \"status\": \"READY\",\n"
+                + "  \"normalizedRequest\": \"绘制第三方支付时序图\"\n"
+                + "}\n"
+                + "```";
+
+        List<Event> events = agent.runAsync(context(agent, fencedAnalysis))
+                .toList()
+                .blockingGet();
+
+        assertEquals(1, child.getInvocationCount());
+        assertEquals(1, events.size());
+        assertEquals("DrawingChild", events.get(0).author());
+    }
+
+    @Test
+    public void prosePrefixedMarkdownFencedReadyStateRunsChildren() {
+        CountingAgent child = new CountingAgent("DrawingChild");
+        ConditionalAgent agent = conditionalAgent(child);
+        String analysis = "基于您补充的信息，我已经完整理解了绘图需求。现在输出标准化的绘图契约：\n\n"
+                + "```json\n"
+                + "{\"status\":\"READY\",\"diagramTypeHint\":\"流程图\"}\n"
+                + "```";
+
+        List<Event> events = agent.runAsync(context(agent, analysis))
+                .toList()
+                .blockingGet();
+
+        assertEquals(1, child.getInvocationCount());
+        assertEquals(1, events.size());
+        assertEquals("DrawingChild", events.get(0).author());
+    }
+
+    @Test
     public void nonMatchingJsonStateSkipsChildren() {
         CountingAgent child = new CountingAgent("DrawingChild");
         ConditionalAgent agent = conditionalAgent(child);
