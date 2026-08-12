@@ -154,6 +154,7 @@ public class MySqlAiQuotaRepository implements IAiQuotaRepository {
     }
 
     @Override
+    @Transactional
     public QuotaSnapshotEntity commit(
             String userId,
             String requestId
@@ -169,8 +170,7 @@ public class MySqlAiQuotaRepository implements IAiQuotaRepository {
             throw new IllegalStateException("quota reservation does not exist");
         }
 
-        if (QuotaLedgerStatus.COMMITTED.name()
-                .equals(ledger.getStatus())) {
+        if (QuotaLedgerStatus.COMMITTED.name().equals(ledger.getStatus())) {
             throw new QuotaRequestAlreadyCompletedException();
         }
 

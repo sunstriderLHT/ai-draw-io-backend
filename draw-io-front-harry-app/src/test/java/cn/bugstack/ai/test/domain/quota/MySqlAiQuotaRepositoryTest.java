@@ -46,6 +46,7 @@ import java.sql.Connection;
 import java.sql.DriverManager;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.Statement;
 
 import static org.junit.Assert.assertEquals;
 import static org.junit.Assert.fail;
@@ -92,7 +93,10 @@ public class MySqlAiQuotaRepositoryTest {
             new MySQLContainer<>("mysql:8.0.36")
                     .withDatabaseName("drawio_test")
                     .withUsername("drawio")
-                    .withPassword("test-only-password");
+                    .withPassword("test-only-password")
+                    .withCommand(
+                            "--log-bin-trust-function-creators=1"
+                    );
 
     @BeforeClass
     public static void migrateDatabase() {
@@ -749,6 +753,85 @@ public class MySqlAiQuotaRepositoryTest {
         assertEquals(0, snapshot.reserved());
         assertEquals(0, snapshot.consumed());
         assertEquals(3, snapshot.remaining());
+    }
+
+    @Test
+    public void shouldRollbackAccountWhenLedgerCommitFails() throws Exception {
+        String userId =
+                "19191919-1919-1919-1919-191919191919";
+
+        String requestId =
+                "20202020-2020-2020-2020-202020202020";
+
+        repository.reserve(
+                userId,
+                requestId,
+                "100001",
+                "chat",
+                3
+        );
+
+        String triggerName = "fail_quota_ledger_commit";
+
+        String createTriggerSql = """
+            CREATE TRIGGER fail_quota_ledger_commit
+            BEFORE UPDATE ON ai_quota_ledger
+            FOR EACH ROW
+            BEGIN
+                IF NEW.request_id =
+                   '20202020-2020-2020-2020-202020202020'
+                   AND NEW.status = 'COMMITTED'
+                THEN
+                    SIGNAL SQLSTATE '45000'
+                    SET MESSAGE_TEXT = 'forced ledger commit failure';
+                END IF;
+            END
+            """;
+
+        try (
+                Connection connection =
+                        DriverManager.getConnection(
+                                MYSQL.getJdbcUrl(),
+                                MYSQL.getUsername(),
+                                MYSQL.getPassword()
+                        );
+                Statement statement =
+                        connection.createStatement()
+        ) {
+            statement.execute(
+                    "DROP TRIGGER IF EXISTS " + triggerName
+            );
+            statement.execute(createTriggerSql);
+        }
+
+        try {
+            repository.commit(userId, requestId);
+            fail("流水提交失败时，整个额度事务应该失败");
+        } catch (Exception expected) {
+            // MySQL trigger 故意阻止流水状态更新。
+        } finally {
+            try (
+                    Connection connection =
+                            DriverManager.getConnection(
+                                    MYSQL.getJdbcUrl(),
+                                    MYSQL.getUsername(),
+                                    MYSQL.getPassword()
+                            );
+                    Statement statement =
+                            connection.createStatement()
+            ) {
+                statement.execute(
+                        "DROP TRIGGER IF EXISTS " + triggerName
+                );
+            }
+        }
+
+        QuotaSnapshotEntity snapshot =
+                repository.findOrCreate(userId, 3);
+
+        assertEquals(0, snapshot.consumed());
+        assertEquals(1, snapshot.reserved());
+        assertEquals(2, snapshot.remaining());
     }
 
     @Configuration
