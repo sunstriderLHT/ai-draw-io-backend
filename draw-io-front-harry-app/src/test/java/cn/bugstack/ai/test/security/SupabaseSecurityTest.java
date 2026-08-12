@@ -1,6 +1,7 @@
 package cn.bugstack.ai.test.security;
 
 import cn.bugstack.ai.domain.agent.service.IChatService;
+import cn.bugstack.ai.domain.quota.service.IAiQuotaService;
 import cn.bugstack.ai.trigger.http.AgentServiceController;
 import cn.bugstack.ai.trigger.security.AuthenticatedUserProvider;
 import cn.bugstack.ai.trigger.security.JsonAccessDeniedHandler;
@@ -59,6 +60,9 @@ public class SupabaseSecurityTest {
 
     @MockitoBean
     private MeteredAgentChatFacade meteredAgentChatFacade;
+
+    @MockitoBean
+    private IAiQuotaService quotaService;
 
     @Test
     public void shouldReturnJson401WhenTokenIsMissing() throws Exception {

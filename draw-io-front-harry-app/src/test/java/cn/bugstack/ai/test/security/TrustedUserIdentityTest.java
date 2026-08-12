@@ -4,6 +4,7 @@ import cn.bugstack.ai.domain.agent.model.valobj.AgentChatResultVO;
 import cn.bugstack.ai.domain.agent.model.valobj.AgentOutputEventVO;
 import cn.bugstack.ai.domain.agent.service.IChatService;
 import cn.bugstack.ai.domain.agent.service.armory.matter.mcp.server.MyTestMcpService;
+import cn.bugstack.ai.domain.quota.service.IAiQuotaService;
 import cn.bugstack.ai.trigger.http.AgentServiceController;
 import cn.bugstack.ai.trigger.http.MeteredAgentChatFacade;
 import cn.bugstack.ai.trigger.http.MeteredChatResult;
@@ -72,6 +73,9 @@ public class TrustedUserIdentityTest {
 
     @MockitoBean
     private MeteredAgentChatFacade meteredAgentChatFacade;
+
+    @MockitoBean
+    private IAiQuotaService quotaService;
 
     @Test
     public void shouldUseJwtSubjectInsteadOfRequestUserId() throws Exception {
