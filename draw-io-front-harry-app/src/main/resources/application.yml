@@ -3,3 +3,7 @@ spring:
     name: ai-agent-scaffold-app
   profiles:
     active: dev
+
+ai:
+  quota:
+    free: ${AI_QUOTA_FREE:3}
