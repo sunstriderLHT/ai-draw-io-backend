@@ -23,6 +23,6 @@ public interface IAgentService {
 
     Response<ChatResponseDTO> chat(String requestId, ChatRequestDTO chatRequestDTO);
 
-    ResponseBodyEmitter chatStream(ChatRequestDTO chatRequestDTO);
+    ResponseBodyEmitter chatStream(String requestId, ChatRequestDTO chatRequestDTO);
 
 }

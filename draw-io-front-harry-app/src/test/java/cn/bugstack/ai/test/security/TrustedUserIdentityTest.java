@@ -23,10 +23,9 @@ import org.springframework.test.context.bean.override.mockito.MockitoBean;
 import org.springframework.test.context.junit4.SpringRunner;
 import org.springframework.test.web.servlet.MockMvc;
 import org.springframework.test.web.servlet.MvcResult;
-
+import cn.bugstack.ai.trigger.http.MeteredAgentOutput;
 
 import java.util.List;
-
 
 import static org.mockito.Mockito.never;
 import static org.mockito.Mockito.verify;
@@ -39,6 +38,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.request;
 import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.status;
 import static org.hamcrest.Matchers.containsString;
+import static org.hamcrest.Matchers.not;
 
 @RunWith(SpringRunner.class)
 @WebMvcTest(controllers = AgentServiceController.class)
@@ -184,7 +184,9 @@ public class TrustedUserIdentityTest {
     }
 
     @Test
-    public void shouldUseJwtSubjectForStreamingChat() throws Exception {
+    public void shouldUseTrustedIdentityAndIdempotencyKeyForStreamingChat()
+            throws Exception {
+
         AgentOutputEventVO trustedOutput =
                 AgentOutputEventVO.builder()
                         .type(AgentOutputEventVO.Type.FINAL)
@@ -193,61 +195,97 @@ public class TrustedUserIdentityTest {
                         .completed(true)
                         .build();
 
-        AgentOutputEventVO attackerOutput =
-                AgentOutputEventVO.builder()
-                        .type(AgentOutputEventVO.Type.FINAL)
-                        .agentName("drawio-agent")
-                        .content("attacker-stream")
-                        .completed(true)
-                        .build();
-
+        /*
+         * 暂时保留旧 Controller 调用的桩。
+         * GREEN 后用 never() 证明它不再绕过计费门面。
+         */
         when(chatService.handleMessageStream(
                 "100001",
                 AUTHENTICATED_USER_ID,
                 "session-1",
-                "hello"))
-                .thenReturn(Flowable.just(trustedOutput));
+                "hello"
+        )).thenReturn(
+                Flowable.just(trustedOutput)
+        );
 
-        when(chatService.handleMessageStream(
+        when(meteredAgentChatFacade.chatStream(
+                AUTHENTICATED_USER_ID,
+                REQUEST_ID,
                 "100001",
-                "attacker",
                 "session-1",
-                "hello"))
-                .thenReturn(Flowable.just(attackerOutput));
+                "hello"
+        )).thenReturn(
+                Flowable.just(
+                        new MeteredAgentOutput(
+                                trustedOutput,
+                                2
+                        )
+                )
+        );
 
-        MvcResult asyncResult = mockMvc.perform(
-                        post("/api/v1/chat_stream")
-                                .with(jwt().jwt(token -> token
-                                        .subject(AUTHENTICATED_USER_ID)
-                                        .claim("role", "authenticated")))
-                                .contentType(MediaType.APPLICATION_JSON)
-                                .accept(MediaType.TEXT_EVENT_STREAM)
-                                .content("""
-                                    {
-                                      "agentId": "100001",
-                                      "userId": "attacker",
-                                      "sessionId": "session-1",
-                                      "message": "hello"
-                                    }
-                                    """))
-                .andExpect(request().asyncStarted())
-                .andReturn();
+        MvcResult asyncResult =
+                mockMvc.perform(
+                                post("/api/v1/chat_stream")
+                                        .with(jwt().jwt(token -> token
+                                                .subject(AUTHENTICATED_USER_ID)
+                                                .claim(
+                                                        "role",
+                                                        "authenticated"
+                                                )))
+                                        .header(
+                                                "Idempotency-Key",
+                                                REQUEST_ID
+                                        )
+                                        .contentType(
+                                                MediaType.APPLICATION_JSON
+                                        )
+                                        .accept(
+                                                MediaType.TEXT_EVENT_STREAM
+                                        )
+                                        .content("""
+                                        {
+                                          "agentId": "100001",
+                                          "userId": "attacker",
+                                          "sessionId": "session-1",
+                                          "message": "hello"
+                                        }
+                                        """)
+                        )
+                        .andExpect(request().asyncStarted())
+                        .andReturn();
 
         mockMvc.perform(asyncDispatch(asyncResult))
                 .andExpect(status().isOk())
                 .andExpect(content().string(
-                        containsString("trusted-stream")));
+                        containsString("trusted-stream")
+                ))
+                .andExpect(content().string(
+                        containsString("\"remaining\":2")
+                ))
+                .andExpect(content().string(
+                        not(containsString("\"output\""))
+                ));
 
-        verify(chatService).handleMessageStream(
+        verify(meteredAgentChatFacade).chatStream(
+                AUTHENTICATED_USER_ID,
+                REQUEST_ID,
+                "100001",
+                "session-1",
+                "hello"
+        );
+
+        verify(chatService, never()).handleMessageStream(
                 "100001",
                 AUTHENTICATED_USER_ID,
                 "session-1",
-                "hello");
+                "hello"
+        );
 
         verify(chatService, never()).handleMessageStream(
                 "100001",
                 "attacker",
                 "session-1",
-                "hello");
+                "hello"
+        );
     }
 }

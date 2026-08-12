@@ -191,7 +191,8 @@ public class AgentServiceController implements IAgentService {
             method = RequestMethod.POST,
             produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     @Override
-    public ResponseBodyEmitter chatStream(@RequestBody ChatRequestDTO requestDTO) {
+    public ResponseBodyEmitter chatStream(@RequestHeader("Idempotency-Key") String requestId,
+                                          @RequestBody ChatRequestDTO requestDTO) {
         SseEmitter emitter = new SseEmitter(10 * 60 * 1000L);
         AgentStreamSubscription subscription = new AgentStreamSubscription();
         emitter.onCompletion(subscription::dispose);
@@ -207,33 +208,44 @@ public class AgentServiceController implements IAgentService {
                     requestDTO.getSessionId()
             );
 
-            subscription.set(chatService.handleMessageStream(
-                    requestDTO.getAgentId(),
-                    userId,
-                    requestDTO.getSessionId(),
-                    requestDTO.getMessage()
-            ).subscribe(
-                    output -> {
-                        try {
-                            emitter.send(SseEmitter.event()
-                                    .name(output.getType().name().toLowerCase(Locale.ROOT))
-                                    .data(output, MediaType.APPLICATION_JSON)
-                            );
-                        } catch (Exception e) {
-                            log.error("流式对话发送失败", e);
-                            subscription.dispose();
-                            emitter.completeWithError(e);
-                        }
-                    },
-                    error -> {
-                        subscription.dispose();
-                        emitter.completeWithError(error);
-                    },
-                    () -> {
-                        subscription.dispose();
-                        emitter.complete();
-                    }
-            ));
+            subscription.set(
+                    meteredAgentChatFacade.chatStream(
+                            userId,
+                            requestId,
+                            requestDTO.getAgentId(),
+                            requestDTO.getSessionId(),
+                            requestDTO.getMessage()
+                    ).subscribe(
+                            meteredOutput -> {
+                                try {
+                                    emitter.send(
+                                            SseEmitter.event()
+                                                    .name(
+                                                            meteredOutput.output()
+                                                                    .getType()
+                                                                    .name()
+                                                                    .toLowerCase(Locale.ROOT)
+                                                    )
+                                                    .data(
+                                                            meteredOutput,
+                                                            MediaType.APPLICATION_JSON
+                                                    )
+                                    );
+                                } catch (Exception e) {
+                                    log.error("流式对话发送失败", e);
+                                    subscription.dispose();
+                                    emitter.completeWithError(e);
+                                }
+                            },
+                            error -> {
+                                subscription.dispose();
+                                emitter.completeWithError(error);
+                            },
+                            () -> {
+                                subscription.dispose();
+                                emitter.complete();
+                            }
+                    ));
         } catch (Exception e) {
             log.error("流式对话失败", e);
             emitter.completeWithError(e);
