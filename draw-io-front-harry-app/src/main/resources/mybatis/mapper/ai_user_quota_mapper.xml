@@ -1,0 +1,101 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="cn.bugstack.ai.infrastructure.dao.IAiUserQuotaDao">
+
+    <resultMap
+            id="aiUserQuotaMap"
+            type="cn.bugstack.ai.infrastructure.dao.po.AiUserQuotaPO">
+        <id column="user_id" property="userId"/>
+        <result column="free_granted" property="freeGranted"/>
+        <result column="purchased_granted" property="purchasedGranted"/>
+        <result column="consumed" property="consumed"/>
+        <result column="reserved" property="reserved"/>
+        <result column="version" property="version"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <insert id="upsertAccount">
+        INSERT INTO ai_user_quota (
+            user_id,
+            free_granted,
+            purchased_granted,
+            consumed,
+            reserved,
+            version,
+            created_at,
+            updated_at
+        ) VALUES (
+                     #{userId},
+                     #{freeQuota},
+                     0,
+                     0,
+                     0,
+                     0,
+                     UTC_TIMESTAMP(3),
+                     UTC_TIMESTAMP(3)
+                 )
+        ON DUPLICATE KEY UPDATE
+            user_id = #{userId}
+    </insert>
+
+    <select id="selectAccount" resultMap="aiUserQuotaMap">
+        SELECT
+            user_id,
+            free_granted,
+            purchased_granted,
+            consumed,
+            reserved,
+            version,
+            created_at,
+            updated_at
+        FROM ai_user_quota
+        WHERE user_id = #{userId}
+    </select>
+
+    <select id="selectAccountForUpdate" resultMap="aiUserQuotaMap">
+        SELECT
+            user_id,
+            free_granted,
+            purchased_granted,
+            consumed,
+            reserved,
+            version,
+            created_at,
+            updated_at
+        FROM ai_user_quota
+        WHERE user_id = #{userId}
+        FOR UPDATE
+    </select>
+
+    <update id="incrementReserved">
+        UPDATE ai_user_quota
+        SET reserved = reserved + 1,
+            version = version + 1,
+            updated_at = UTC_TIMESTAMP(3)
+        WHERE user_id = #{userId}
+    </update>
+
+    <update id="commitReserved">
+        UPDATE ai_user_quota
+        SET reserved = reserved - 1,
+            consumed = consumed + 1,
+            version = version + 1,
+            updated_at = UTC_TIMESTAMP(3)
+        WHERE user_id = #{userId}
+          AND reserved > 0
+    </update>
+
+    <update id="releaseReserved">
+        UPDATE ai_user_quota
+        SET reserved = reserved - 1,
+            version = version + 1,
+            updated_at = UTC_TIMESTAMP(3)
+        WHERE user_id = #{userId}
+          AND reserved > 0
+    </update>
+
+</mapper>

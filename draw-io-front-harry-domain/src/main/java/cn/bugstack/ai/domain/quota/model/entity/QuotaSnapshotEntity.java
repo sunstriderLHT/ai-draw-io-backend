@@ -1,6 +1,6 @@
 package cn.bugstack.ai.domain.quota.model.entity;
 
-public record QuotaSnapshot(
+public record QuotaSnapshotEntity(
         int freeGranted,
         int purchasedGranted,
         int consumed,

@@ -2,7 +2,7 @@ package cn.bugstack.ai.domain.quota.service;
 
 import cn.bugstack.ai.domain.quota.adapter.repository.IAiQuotaRepository;
 import cn.bugstack.ai.domain.quota.model.entity.QuotaReservationEntity;
-import cn.bugstack.ai.domain.quota.model.entity.QuotaSnapshot;
+import cn.bugstack.ai.domain.quota.model.entity.QuotaSnapshotEntity;
 
 import java.time.Instant;
 import java.util.UUID;
@@ -41,7 +41,7 @@ public class AiQuotaService implements IAiQuotaService {
     }
 
     @Override
-    public QuotaSnapshot commit(String userId, String requestId) {
+    public QuotaSnapshotEntity commit(String userId, String requestId) {
         UUID.fromString(userId);
         UUID.fromString(requestId);
 
@@ -49,7 +49,7 @@ public class AiQuotaService implements IAiQuotaService {
     }
 
     @Override
-    public QuotaSnapshot release(String userId, String requestId) {
+    public QuotaSnapshotEntity release(String userId, String requestId) {
         UUID.fromString(userId);
         UUID.fromString(requestId);
 
@@ -57,7 +57,7 @@ public class AiQuotaService implements IAiQuotaService {
     }
 
     @Override
-    public QuotaSnapshot getSnapshot(String userId) {
+    public QuotaSnapshotEntity getSnapshot(String userId) {
         UUID.fromString(userId);
 
         return repository.findOrCreate(userId, freeQuota);

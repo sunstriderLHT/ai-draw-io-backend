@@ -1,7 +1,7 @@
 package cn.bugstack.ai.domain.quota.adapter.repository;
 
 import cn.bugstack.ai.domain.quota.model.entity.QuotaReservationEntity;
-import cn.bugstack.ai.domain.quota.model.entity.QuotaSnapshot;
+import cn.bugstack.ai.domain.quota.model.entity.QuotaSnapshotEntity;
 
 import java.time.Instant;
 
@@ -15,11 +15,11 @@ public interface IAiQuotaRepository {
             int freeQuota
     );
 
-    QuotaSnapshot commit(String userId, String requestId);
+    QuotaSnapshotEntity commit(String userId, String requestId);
 
-    QuotaSnapshot release(String userId, String requestId);
+    QuotaSnapshotEntity release(String userId, String requestId);
 
-    QuotaSnapshot findOrCreate(String userId, int freeQuota);
+    QuotaSnapshotEntity findOrCreate(String userId, int freeQuota);
 
     int releaseExpired(Instant cutoff);
 }

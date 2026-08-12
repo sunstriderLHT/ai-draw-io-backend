@@ -5,6 +5,6 @@ import cn.bugstack.ai.domain.quota.model.valobj.QuotaLedgerStatus;
 public record QuotaReservationEntity (
         String requestId,
         QuotaLedgerStatus status,
-        QuotaSnapshot snapshot
+        QuotaSnapshotEntity snapshot
 ) {
 }

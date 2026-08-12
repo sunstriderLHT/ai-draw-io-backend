@@ -4,7 +4,7 @@ import cn.bugstack.ai.domain.quota.adapter.repository.IAiQuotaRepository;
 import cn.bugstack.ai.domain.quota.exception.QuotaExhaustedException;
 import cn.bugstack.ai.domain.quota.exception.QuotaRequestAlreadyCompletedException;
 import cn.bugstack.ai.domain.quota.exception.QuotaRequestInProgressException;
-import cn.bugstack.ai.domain.quota.model.entity.QuotaSnapshot;
+import cn.bugstack.ai.domain.quota.model.entity.QuotaSnapshotEntity;
 import cn.bugstack.ai.domain.quota.service.AiQuotaService;
 import cn.bugstack.ai.types.exception.AppException;
 import org.junit.Test;
@@ -82,13 +82,13 @@ public class AiQuotaServiceTest {
 
     @Test
     public void shouldCommitReservedQuota() {
-        QuotaSnapshot expected =
-                new QuotaSnapshot(3, 0, 1, 0);
+        QuotaSnapshotEntity expected =
+                new QuotaSnapshotEntity(3, 0, 1, 0);
 
         when(repository.commit(USER_ID, REQUEST_ID))
                 .thenReturn(expected);
 
-        QuotaSnapshot actual =
+        QuotaSnapshotEntity actual =
                 service.commit(USER_ID, REQUEST_ID);
 
         assertSame(expected, actual);
@@ -96,13 +96,13 @@ public class AiQuotaServiceTest {
 
     @Test
     public void shouldReleaseReservedQuota() {
-        QuotaSnapshot expected =
-                new QuotaSnapshot(3, 0, 0, 0);
+        QuotaSnapshotEntity expected =
+                new QuotaSnapshotEntity(3, 0, 0, 0);
 
         when(repository.release(USER_ID, REQUEST_ID))
                 .thenReturn(expected);
 
-        QuotaSnapshot actual =
+        QuotaSnapshotEntity actual =
                 service.release(USER_ID, REQUEST_ID);
 
         assertSame(expected, actual);
@@ -110,13 +110,13 @@ public class AiQuotaServiceTest {
 
     @Test
     public void shouldGetOrCreateQuotaSnapshot() {
-        QuotaSnapshot expected =
-                new QuotaSnapshot(3, 0, 0, 0);
+        QuotaSnapshotEntity expected =
+                new QuotaSnapshotEntity(3, 0, 0, 0);
 
         when(repository.findOrCreate(USER_ID, 3))
                 .thenReturn(expected);
 
-        QuotaSnapshot actual =
+        QuotaSnapshotEntity actual =
                 service.getSnapshot(USER_ID);
 
         assertSame(expected, actual);
@@ -137,8 +137,8 @@ public class AiQuotaServiceTest {
 
     @Test
     public void shouldExposeLockedSnapshotWhenQuotaIsExhausted() {
-        QuotaSnapshot snapshot =
-                new QuotaSnapshot(3, 0, 3, 0);
+        QuotaSnapshotEntity snapshot =
+                new QuotaSnapshotEntity(3, 0, 3, 0);
 
         QuotaExhaustedException error =
                 new QuotaExhaustedException(snapshot);
