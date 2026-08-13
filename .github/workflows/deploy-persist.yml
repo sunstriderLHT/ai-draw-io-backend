@@ -47,7 +47,7 @@ jobs:
           SUPABASE_JWKS_URI: http://127.0.0.1:9/jwks
           AI_MODEL_API_KEY: test-only-placeholder
         run: >-
-          mvn -B -ntp -pl draw-io-front-harry-app -am
+          mvn -B -ntp -pl draw-io-front-harry-app -am -Dsurefire.failIfNoSpecifiedTests=false
           -Dtest=DependencySmokeTest,SupabaseSecurityTest,SupabaseClaimsValidatorTest,TrustedUserIdentityTest,AiQuotaServiceTest,MySqlAiQuotaRepositoryTest,MeteredSynchronousChatTest,MeteredStreamingChatTest,AiApiContractTest,AgentConfigSecretSafetyTest,QuotaReservationRecoveryJobTest,AgentStreamSubscriptionTest,AgentOutputEventMapperTest
           test
 
