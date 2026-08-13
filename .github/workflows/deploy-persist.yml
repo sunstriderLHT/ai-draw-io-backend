@@ -49,53 +49,25 @@ jobs:
           test
   deploy:
     needs: validate
-    runs-on: ubuntu-latest
-    env:
-      IMAGE_REPOSITORY: ${{ secrets.TCR_REGISTRY }}/${{ secrets.TCR_NAMESPACE }}/drawio-backend
+    runs-on: [self-hosted, linux, x64, drawio-backend]
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
         with:
           distribution: temurin
           java-version: '17'
-          cache: maven
       - name: Package the production JAR
-        run: mvn -B -ntp -DskipTests package
-      - name: Log in to Tencent Cloud TCR
-        uses: docker/login-action@v3
-        with:
-          registry: ${{ secrets.TCR_REGISTRY }}
-          username: ${{ secrets.TCR_USERNAME }}
-          password: ${{ secrets.TCR_PASSWORD }}
-      - uses: docker/setup-buildx-action@v3
-      - name: Build and push the backend image
-        uses: docker/build-push-action@v6
-        with:
-          context: draw-io-front-harry-app
-          file: draw-io-front-harry-app/Dockerfile
-          push: true
-          tags: |
-            ${{ env.IMAGE_REPOSITORY }}:${{ github.sha }}
-            ${{ env.IMAGE_REPOSITORY }}:persist
-      - name: Configure SSH
-        env:
-          BACKEND_PRODUCTION_SSH_PRIVATE_KEY: ${{ secrets.BACKEND_PRODUCTION_SSH_PRIVATE_KEY }}
-          BACKEND_PRODUCTION_SSH_KNOWN_HOSTS: ${{ secrets.BACKEND_PRODUCTION_SSH_KNOWN_HOSTS }}
         run: |
           set -eu
-          install -d -m 700 ~/.ssh
-          printf '%s\n' "$BACKEND_PRODUCTION_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
-          chmod 600 ~/.ssh/id_ed25519
-          printf '%s\n' "$BACKEND_PRODUCTION_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
-          chmod 600 ~/.ssh/known_hosts
-      - name: Pull and restart the backend on the production server
-        env:
-          BACKEND_PRODUCTION_HOST: ${{ secrets.BACKEND_PRODUCTION_HOST }}
-          BACKEND_PRODUCTION_PORT: ${{ secrets.BACKEND_PRODUCTION_PORT }}
+          mvn -s "$HOME/.m2/settings.xml" -B -ntp -DskipTests \
+            -Dmaven.wagon.http.connectionTimeout=20000 \
+            -Dmaven.wagon.http.readTimeout=120000 \
+            -Dmaven.wagon.http.retryHandler.count=2 \
+            package
+      - name: Build the backend image locally
         run: |
           set -eu
-          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes \
-            -o ConnectTimeout=20 -o ConnectionAttempts=2 \
-            -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes \
-            -p "$BACKEND_PRODUCTION_PORT" "backend-deploy@$BACKEND_PRODUCTION_HOST" \
-            "sudo /usr/local/sbin/deploy-drawio-backend $GITHUB_SHA"
+          docker build -f draw-io-front-harry-app/Dockerfile \
+            -t "drawio-backend:$GITHUB_SHA" draw-io-front-harry-app
+      - name: Restart the backend with the local image
+        run: sudo /usr/local/sbin/deploy-drawio-backend "$GITHUB_SHA"
