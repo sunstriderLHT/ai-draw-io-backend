@@ -192,7 +192,10 @@ AI_EMBEDDINGS_PATH=embeddings
 限制文件权限：
 
 ```bash
-chmod 600 .env
+if ! chmod 600 .env; then
+  echo "错误：无法把 .env 权限限制为 600" >&2
+  exit 1
+fi
 ```
 
 Docker Compose 的后端服务应显式读取该文件：
@@ -201,14 +204,17 @@ Docker Compose 的后端服务应显式读取该文件：
 services:
   backend:
     env_file:
-      - .env
+      - ${DRAWIO_BACKEND_ENV_FILE:-.env}
 ```
 
-启动时也可以显式指定 Compose 环境文件：
+生产环境使用仓库提供的 `docker-compose-production.yml`，显式指定 Compose 环境文件并且只启动后端服务：
 
 ```bash
-sudo docker compose --env-file .env up -d --build
+sudo docker compose --env-file .env \
+  -f docker-compose-production.yml up -d backend
 ```
+
+该 Compose 文件只通过 `expose` 向 Docker 网络开放 `8091`，不会把 `8091` 发布到宿主机。
 
 ## 4. 数据库连接
 
@@ -347,34 +353,11 @@ Idempotency-Key: <new-canonical-uuid>
 - `403`：用户不在白名单。
 - `409`：相同请求正在处理或已经完成。
 
-## 9. 回滚公网入口
+## 9. 公网入口由前端部署负责
 
-后端验证完成之前，Nginx 保持 API 入口返回 404：
+后端验证完成之前，公网 `/api/v1/` 应保持紧急关闭，避免请求转发到模型服务。Nginx 属于前端部署栈，后端运维手册不直接重载或重启入口容器。
 
-```nginx
-location = /api/v1 {
-    return 404;
-}
-
-location ^~ /api/v1/ {
-    return 404;
-}
-```
-
-重新加载 Nginx：
-
-```bash
-sudo nginx -t
-sudo nginx -s reload
-```
-
-使用 Docker Compose 部署时可以执行：
-
-```bash
-sudo docker compose -f deploy/docker-compose.yml restart nginx
-```
-
-这样前端仍可访问，但公网请求不会转发到后端，也不会消耗模型 Token。
+请严格执行前端仓库 `deploy/README.md` 中独立的 emergency API closure/restore procedure。该流程会校验前端生产 Compose、切换 API-blocked 配置并验证公网 404；恢复入口也必须使用同一份前端流程。
 
 ## 10. 故障排查
 
@@ -398,3 +381,495 @@ sudo docker compose -f deploy/docker-compose.yml restart nginx
 - [ ] Flyway 迁移成功，额度表已创建。
 - [ ] 401、402、403、409 响应符合 API 契约。
 - [ ] Nginx 在联调完成前继续对 `/api/v1` 返回 404。
+
+## 12. 生产环境私网部署与回滚
+
+本节命令在服务器的 `/home/ubuntu/drawio-backend` 部署目录执行。生产部署只更新后端镜像和后端容器，不删除容器卷、证书、环境文件、数据库或外部网络。
+
+### 12.1 构建发布镜像
+
+先在完成代码检出的构建目录使用 Java 17 打包。执行前在当前 shell 中把 `JAVA_HOME` 设置为服务器上的 JDK 17 绝对目录；下面的门禁会拒绝未设置、不可执行或不是 Java 17 的目录。只有 Maven 成功后，才允许备份运行版本并构建镜像：
+
+```bash
+if [ -z "${JAVA_HOME:-}" ] || [ ! -x "$JAVA_HOME/bin/java" ]; then
+  echo "错误：请先把 JAVA_HOME 设置为有效的 JDK 17 绝对目录" >&2
+  exit 1
+fi
+
+if ! java_version="$("$JAVA_HOME/bin/java" -version 2>&1)"; then
+  echo "错误：无法执行 JAVA_HOME 中的 Java" >&2
+  exit 1
+fi
+
+case "$java_version" in
+  *'version "17.'*) ;;
+  *) echo "错误：生产构建必须使用 Java 17" >&2; exit 1 ;;
+esac
+
+export PATH="$JAVA_HOME/bin:$PATH"
+
+if ! mvn -q -pl draw-io-front-harry-app -am -DskipTests package; then
+  echo "错误：Maven 打包失败，禁止构建生产镜像" >&2
+  exit 1
+fi
+
+if ! existing_container="$(sudo docker container ls -a \
+  --filter 'name=^/drawio-backend$' \
+  --format '{{.Names}}')"; then
+  echo "错误：无法查询现有后端容器，停止部署" >&2
+  exit 1
+fi
+
+ROLLBACK_MARKER_FILE="/home/ubuntu/drawio-backend/.rollback-source-image"
+
+if [ -z "$existing_container" ]; then
+  if ! stale_backup_image_ids="$(sudo docker image ls \
+    --quiet --no-trunc drawio-backend:before-production-deploy)"; then
+    echo "错误：无法检查陈旧回滚标签，停止首次部署" >&2
+    exit 1
+  fi
+
+  if [ -n "$stale_backup_image_ids" ] || [ -e "$ROLLBACK_MARKER_FILE" ]; then
+    echo "错误：首次部署检测到陈旧回滚来源；请先人工核实并隔离旧标签和凭证" >&2
+    exit 1
+  fi
+
+  echo "FIRST_DEPLOY_NO_ROLLBACK_SOURCE：未找到旧容器，本次按首次部署继续"
+elif [ "$existing_container" = "drawio-backend" ]; then
+  if ! running_state="$(sudo docker inspect \
+    --format '{{.State.Running}}' drawio-backend)"; then
+    echo "错误：无法检查当前 drawio-backend 状态，停止部署" >&2
+    exit 1
+  fi
+
+  if [ "$running_state" != "true" ]; then
+    echo "错误：drawio-backend 当前未运行，无法创建可信回滚标签" >&2
+    exit 1
+  fi
+
+  if ! running_image_id="$(sudo docker inspect \
+    --format '{{.Image}}' drawio-backend)"; then
+    echo "错误：无法读取当前运行容器的不可变镜像 ID，停止部署" >&2
+    exit 1
+  fi
+
+  if [ -z "$running_image_id" ]; then
+    echo "错误：当前运行容器的镜像 ID 为空，停止部署" >&2
+    exit 1
+  fi
+
+  if sudo docker image inspect "$running_image_id" >/dev/null 2>&1; then
+    if ! sudo docker tag \
+      "$running_image_id" \
+      drawio-backend:before-production-deploy; then
+      echo "错误：无法创建回滚镜像标签，停止部署" >&2
+      exit 1
+    fi
+
+    if ! backup_image_id="$(sudo docker image inspect \
+      --format '{{.Id}}' drawio-backend:before-production-deploy)"; then
+      echo "错误：无法验证新建的回滚标签，停止部署" >&2
+      exit 1
+    fi
+
+    if [ "$backup_image_id" != "$running_image_id" ]; then
+      echo "错误：回滚标签与当前运行镜像 ID 不一致，停止部署" >&2
+      exit 1
+    fi
+
+    rollback_marker_tmp="${ROLLBACK_MARKER_FILE}.tmp.$$"
+    if ! printf '%s\n' "$running_image_id" >"$rollback_marker_tmp"; then
+      echo "错误：无法写入临时回滚凭证，停止部署" >&2
+      exit 1
+    fi
+
+    if ! chmod 600 "$rollback_marker_tmp"; then
+      rm -f "$rollback_marker_tmp"
+      echo "错误：无法限制回滚凭证权限，停止部署" >&2
+      exit 1
+    fi
+
+    if ! mv -f "$rollback_marker_tmp" "$ROLLBACK_MARKER_FILE"; then
+      rm -f "$rollback_marker_tmp"
+      echo "错误：无法发布本次部署的回滚凭证，停止部署" >&2
+      exit 1
+    fi
+  else
+    echo "错误：当前运行容器的镜像 ID 不可用，停止部署" >&2
+    exit 1
+  fi
+else
+  echo "错误：容器查询返回了非预期名称，停止部署" >&2
+  exit 1
+fi
+
+if ! sudo docker build \
+  -f draw-io-front-harry-app/Dockerfile \
+  -t drawio-backend:latest \
+  draw-io-front-harry-app; then
+  echo "错误：生产镜像构建失败，停止部署" >&2
+  exit 1
+fi
+```
+
+`draw-io-front-harry-app/Dockerfile` 会把 Maven 已测试并打包的 JAR 写入镜像。不要把宿主机上的可变 JAR bind mount 到生产容器。
+
+### 12.2 准备部署目录和私网
+
+把仓库中的 `docs/dev-ops/docker-compose-production.yml` 放到部署目录，并创建日志目录。先把 `RELEASE_DIRECTORY` 设置为已验证发布目录的绝对路径；不要使用 `CHANGE_ME`：
+
+```bash
+RELEASE_DIRECTORY="${RELEASE_DIRECTORY:-}"
+if [ -z "$RELEASE_DIRECTORY" ] || [ "$RELEASE_DIRECTORY" = "CHANGE_ME" ]; then
+  echo "错误：请先设置有效的 RELEASE_DIRECTORY" >&2
+  exit 1
+fi
+
+case "$RELEASE_DIRECTORY" in
+  /*) ;;
+  *) echo "错误：RELEASE_DIRECTORY 必须是绝对路径" >&2; exit 1 ;;
+esac
+
+if ! RELEASE_DIRECTORY="$(realpath -e -- "$RELEASE_DIRECTORY")"; then
+  echo "错误：无法解析 RELEASE_DIRECTORY" >&2
+  exit 1
+fi
+
+if [ ! -f "$RELEASE_DIRECTORY/docs/dev-ops/docker-compose-production.yml" ]; then
+  echo "错误：发布目录中不存在生产 Compose 文件" >&2
+  exit 1
+fi
+
+if ! cd /home/ubuntu/drawio-backend; then
+  echo "错误：无法进入后端部署目录" >&2
+  exit 1
+fi
+
+compose_tmp="./docker-compose-production.yml.tmp.$$"
+if ! install -m 644 \
+  "$RELEASE_DIRECTORY/docs/dev-ops/docker-compose-production.yml" \
+  "$compose_tmp"; then
+  echo "错误：无法复制生产 Compose 文件" >&2
+  exit 1
+fi
+
+if ! mv -f "$compose_tmp" ./docker-compose-production.yml; then
+  rm -f "$compose_tmp"
+  echo "错误：无法发布生产 Compose 文件" >&2
+  exit 1
+fi
+
+if ! mkdir -p ./log; then
+  echo "错误：无法创建日志目录" >&2
+  exit 1
+fi
+```
+
+只在网络不存在时创建，已有网络不会被修改：
+
+```bash
+sudo docker network inspect deploy_app >/dev/null 2>&1 \
+  || sudo docker network create deploy_app
+
+sudo docker network inspect software_my-network >/dev/null 2>&1 \
+  || sudo docker network create software_my-network
+```
+
+在 Compose 文件旁创建或复制服务器专用 `.env`，不要在终端回显其中的值。先把 `SERVER_PRIVATE_ENV_SOURCE` 设置为服务器私密环境文件的绝对路径；不要使用 `CHANGE_ME`：
+
+```bash
+SERVER_PRIVATE_ENV_SOURCE="${SERVER_PRIVATE_ENV_SOURCE:-}"
+if [ -z "$SERVER_PRIVATE_ENV_SOURCE" ] \
+  || [ "$SERVER_PRIVATE_ENV_SOURCE" = "CHANGE_ME" ]; then
+  echo "错误：请先设置有效的 SERVER_PRIVATE_ENV_SOURCE" >&2
+  exit 1
+fi
+
+case "$SERVER_PRIVATE_ENV_SOURCE" in
+  /*) ;;
+  *) echo "错误：SERVER_PRIVATE_ENV_SOURCE 必须是绝对路径" >&2; exit 1 ;;
+esac
+
+if ! SERVER_PRIVATE_ENV_SOURCE="$(realpath -e -- "$SERVER_PRIVATE_ENV_SOURCE")"; then
+  echo "错误：无法解析 SERVER_PRIVATE_ENV_SOURCE" >&2
+  exit 1
+fi
+
+if [ ! -f "$SERVER_PRIVATE_ENV_SOURCE" ]; then
+  echo "错误：SERVER_PRIVATE_ENV_SOURCE 不是普通文件" >&2
+  exit 1
+fi
+
+env_tmp="./.env.tmp.$$"
+if ! install -m 600 "$SERVER_PRIVATE_ENV_SOURCE" "$env_tmp"; then
+  echo "错误：无法复制服务器私密环境文件" >&2
+  exit 1
+fi
+
+if [ "$(stat -c '%a' "$env_tmp")" != "600" ]; then
+  rm -f "$env_tmp"
+  echo "错误：临时环境文件权限不是 600" >&2
+  exit 1
+fi
+
+if ! mv -f "$env_tmp" ./.env; then
+  rm -f "$env_tmp"
+  echo "错误：无法原子替换 .env，旧文件保持不变" >&2
+  exit 1
+fi
+```
+
+`.env` 必须保留在服务器，不能进入 Git 或镜像层。
+
+### 12.3 启动后端
+
+先确认 Compose 文件能成功解析且服务名为 `backend`。该命令本身不验证运行时网络成员或宿主机监听端口，网络和端口必须按下一节的实际状态检查：
+
+```bash
+if ! compose_services="$(sudo docker compose --env-file .env \
+  -f docker-compose-production.yml config --services)"; then
+  echo "错误：生产 Compose 无法解析，停止部署" >&2
+  exit 1
+fi
+
+if [ "$compose_services" != "backend" ]; then
+  echo "错误：生产 Compose 服务清单不符合预期，停止部署" >&2
+  exit 1
+fi
+
+if ! sudo docker compose --env-file .env \
+  -f docker-compose-production.yml up -d backend; then
+  echo "错误：后端容器启动失败，停止部署" >&2
+  exit 1
+fi
+
+if ! sudo docker compose --env-file .env \
+  -f docker-compose-production.yml ps backend; then
+  echo "错误：无法读取后端容器状态" >&2
+  exit 1
+fi
+```
+
+该命令可能重建 `drawio-backend` 容器，但不会执行 `down`，也不会删除卷或外部网络。
+
+### 12.4 验证双网络和私有端口
+
+确认后端同时加入前端入口网络和数据库网络：
+
+```bash
+for network in deploy_app software_my-network; do
+  if ! network_members="$(sudo docker network inspect "$network" \
+    --format '{{range $id, $container := .Containers}}{{println $container.Name}}{{end}}')"; then
+    echo "错误：无法检查 Docker 网络 $network" >&2
+    exit 1
+  fi
+
+  if ! printf '%s\n' "$network_members" | grep -Fx drawio-backend >/dev/null; then
+    echo "错误：drawio-backend 未加入 $network" >&2
+    exit 1
+  fi
+done
+```
+
+从 `deploy_app` 内部访问受保护接口。缺少 JWT 时应返回 HTTP 401，响应类型和正文应为 JSON：
+
+```bash
+if ! unauth_response="$(sudo docker run --rm --network deploy_app \
+  curlimages/curl:8.10.1 \
+  -sS -w '\nSTATUS=%{http_code}\nTYPE=%{content_type}\n' \
+  http://drawio-backend:8091/api/v1/query_ai_agent_config_list)"; then
+  echo "错误：内部未鉴权请求失败" >&2
+  exit 1
+fi
+
+printf '%s\n' "$unauth_response" | grep -Fx 'STATUS=401' >/dev/null \
+  || { echo "错误：未鉴权请求没有返回 401" >&2; exit 1; }
+printf '%s\n' "$unauth_response" | grep -E '^TYPE=application/json' >/dev/null \
+  || { echo "错误：401 响应不是 JSON" >&2; exit 1; }
+printf '%s\n' "$unauth_response" | grep -F '"code":"AUTH_TOKEN_INVALID"' >/dev/null \
+  || { echo "错误：401 JSON 缺少 AUTH_TOKEN_INVALID" >&2; exit 1; }
+
+echo "内部未鉴权请求通过：STATUS=401，JSON AUTH_TOKEN_INVALID"
+```
+
+确认宿主机没有监听 `8091`：
+
+```bash
+if ! ss_output="$(sudo ss -lntp)"; then
+  echo "错误：无法读取宿主机监听端口" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$ss_output" \
+  | grep -qE '(^|[[:space:]])[^[:space:]]*:8091[[:space:]]'; then
+  echo "错误：宿主机正在监听 8091" >&2
+  exit 1
+else
+  echo "宿主机未监听 8091"
+fi
+```
+
+### 12.5 验证启动、迁移、Mapper 和额度回收任务
+
+查看本次启动日志，确认 Flyway 和 Spring Boot 正常启动。任一标志缺失都会停止验收：
+
+```bash
+if ! startup_logs="$(sudo docker compose --env-file .env \
+  -f docker-compose-production.yml logs --since 10m backend)"; then
+  echo "错误：无法读取后端日志" >&2
+  exit 1
+fi
+
+printf '%s\n' "$startup_logs" \
+  | grep -E 'Successfully applied|Schema .* is up to date' >/dev/null \
+  || { echo "错误：未找到 Flyway 成功标志" >&2; exit 1; }
+printf '%s\n' "$startup_logs" | grep -F 'Started Application' >/dev/null \
+  || { echo "错误：未找到应用启动成功标志" >&2; exit 1; }
+```
+
+至少等待一个 `AI_RESERVATION_RECOVERY_INTERVAL`，再确认 MyBatis Mapper 和额度回收定时任务没有异常：
+
+```bash
+if ! recovery_logs="$(sudo docker compose --env-file .env \
+  -f docker-compose-production.yml logs --since 10m backend)"; then
+  echo "错误：无法读取额度回收任务日志" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$recovery_logs" \
+  | grep -E 'BindingException|Invalid bound statement|Error parsing Mapper XML|Unexpected error occurred in scheduled task'; then
+  echo "错误：Mapper 加载或额度回收任务异常" >&2
+  exit 1
+else
+  echo "MyBatis Mapper 与额度回收任务无异常"
+fi
+```
+
+同时保留一次鉴权成功后的额度查询或聊天验收记录，确认数据库 Mapper 能执行真实读写；不要只根据容器处于 `Up` 状态判断部署成功。
+
+下面的命令从终端静默读取 Supabase Access Token，并写入权限为 `600` 的临时 curl 配置。配置通过标准输入传入容器，因此 Token 不会出现在 `docker run` 的命令参数或容器的 `Config.Cmd` 中。请求完成或脚本中断时都会清除临时文件和 shell 变量：
+
+```bash
+if ! curl_config="$(mktemp)"; then
+  echo "错误：无法创建临时 curl 配置" >&2
+  exit 1
+fi
+
+if ! chmod 600 "$curl_config"; then
+  rm -f "$curl_config"
+  echo "错误：无法限制临时 curl 配置权限" >&2
+  exit 1
+fi
+
+cleanup_quota_auth() {
+  rm -f "$curl_config"
+  unset ACCESS_TOKEN
+}
+trap cleanup_quota_auth EXIT HUP INT TERM
+
+read -r -s -p 'Supabase Access Token: ' ACCESS_TOKEN
+printf '\n'
+if ! printf 'header = "Authorization: Bearer %s"\n' \
+  "$ACCESS_TOKEN" >"$curl_config"; then
+  echo "错误：无法写入临时 curl 配置" >&2
+  exit 1
+fi
+unset ACCESS_TOKEN
+
+if ! quota_response="$(sudo docker run --rm -i --network deploy_app \
+  curlimages/curl:8.10.1 \
+  --config - \
+  -sS -w '\nSTATUS=%{http_code}\nTYPE=%{content_type}\n' \
+  http://drawio-backend:8091/api/v1/quota <"$curl_config")"; then
+  echo "错误：内部鉴权额度请求失败" >&2
+  exit 1
+fi
+
+cleanup_quota_auth
+trap - EXIT HUP INT TERM
+
+printf '%s\n' "$quota_response" | grep -Fx 'STATUS=200' >/dev/null \
+  || { echo "错误：额度接口没有返回 200" >&2; exit 1; }
+printf '%s\n' "$quota_response" | grep -E '^TYPE=application/json' >/dev/null \
+  || { echo "错误：额度接口响应不是 JSON" >&2; exit 1; }
+printf '%s\n' "$quota_response" | grep -F '"code":"0000"' >/dev/null \
+  || { echo "错误：额度接口没有返回成功业务码" >&2; exit 1; }
+
+for field in freeGranted purchasedGranted consumed reserved remaining; do
+  printf '%s\n' "$quota_response" | grep -F "\"$field\"" >/dev/null \
+    || { echo "错误：额度响应缺少 $field" >&2; exit 1; }
+done
+
+echo "内部额度请求通过：STATUS=200，JSON 字段完整"
+```
+
+预期为 HTTP 200 JSON，且 `data` 中包含 `freeGranted`、`purchasedGranted`、`consumed`、`reserved` 和 `remaining`。
+
+### 12.6 回滚后端镜像
+
+只有 `drawio-backend:before-production-deploy` 存在时才执行回滚。回滚会使用旧镜像重建后端容器，但不会反向执行 Flyway、删除额度数据、删除卷或删除网络：
+
+```bash
+if ! cd /home/ubuntu/drawio-backend; then
+  echo "错误：无法进入后端部署目录" >&2
+  exit 1
+fi
+
+ROLLBACK_MARKER_FILE="/home/ubuntu/drawio-backend/.rollback-source-image"
+
+if [ ! -f "$ROLLBACK_MARKER_FILE" ]; then
+  echo "错误：本次升级没有可信回滚凭证，禁止使用可能陈旧的回滚标签" >&2
+  exit 1
+fi
+
+if ! rollback_source_image_id="$(cat "$ROLLBACK_MARKER_FILE")"; then
+  echo "错误：无法读取本次升级的回滚凭证" >&2
+  exit 1
+fi
+
+if [ -z "$rollback_source_image_id" ]; then
+  echo "错误：本次升级的回滚凭证为空" >&2
+  exit 1
+fi
+
+if ! backup_image_id="$(sudo docker image inspect \
+  --format '{{.Id}}' drawio-backend:before-production-deploy)"; then
+  echo "错误：回滚镜像不存在，停止回滚" >&2
+  exit 1
+fi
+
+if [ "$rollback_source_image_id" != "$backup_image_id" ]; then
+  echo "错误：回滚标签与本次升级凭证不一致，停止回滚" >&2
+  exit 1
+fi
+
+printf '%s\n' '回滚前必须确认旧版本与当前 Flyway schema 向前兼容。'
+printf '%s' '已完成兼容性评审并批准回滚？输入 ROLLBACK_SCHEMA_APPROVED：'
+read -r rollback_schema_approval
+
+if [ "$rollback_schema_approval" != "ROLLBACK_SCHEMA_APPROVED" ]; then
+  echo "错误：未明确确认 schema 兼容性，停止回滚" >&2
+  exit 1
+fi
+
+if ! sudo docker tag \
+  drawio-backend:before-production-deploy \
+  drawio-backend:latest; then
+  echo "错误：无法恢复回滚镜像标签，停止回滚" >&2
+  exit 1
+fi
+
+if ! sudo docker compose --env-file .env \
+  -f docker-compose-production.yml up -d --no-deps --force-recreate backend; then
+  echo "错误：回滚容器启动失败" >&2
+  exit 1
+fi
+
+if ! sudo docker compose --env-file .env \
+  -f docker-compose-production.yml ps backend; then
+  echo "错误：无法读取回滚后的容器状态" >&2
+  exit 1
+fi
+```
+
+镜像回滚不等于数据库回滚。上述强制确认必须在恢复镜像标签和重建容器之前完成；不要手工删除 Flyway 记录或额度表。
