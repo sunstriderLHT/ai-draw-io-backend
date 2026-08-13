@@ -87,12 +87,12 @@ jobs:
           RELEASE="$GITHUB_SHA"
           SSH="ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ConnectionAttempts=2 -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes -p $BACKEND_PRODUCTION_PORT"
           $SSH "backend-deploy@$BACKEND_PRODUCTION_HOST" "install -d -m 700 /home/backend-deploy/staging/$RELEASE"
-          rsync -a --delete --info=progress2 --contimeout=30 --timeout=300 \
+          rsync -a --delete --info=progress2 --timeout=300 \
             --exclude '.git/' --exclude 'target/' --exclude '.worktrees/' \
             -e "$SSH" ./ "backend-deploy@$BACKEND_PRODUCTION_HOST:/home/backend-deploy/staging/$RELEASE/"
           $SSH "backend-deploy@$BACKEND_PRODUCTION_HOST" \
             "install -d -m 700 /home/backend-deploy/staging/$RELEASE/draw-io-front-harry-app/target"
-          rsync -a --info=progress2 --contimeout=30 --timeout=300 -e "$SSH" \
+          rsync -a --info=progress2 --timeout=300 -e "$SSH" \
             draw-io-front-harry-app/target/ai-agent-scaffold-app.jar \
             "backend-deploy@$BACKEND_PRODUCTION_HOST:/home/backend-deploy/staging/$RELEASE/draw-io-front-harry-app/target/"
           printf '%s\n' "$RELEASE" | $SSH "backend-deploy@$BACKEND_PRODUCTION_HOST" \
