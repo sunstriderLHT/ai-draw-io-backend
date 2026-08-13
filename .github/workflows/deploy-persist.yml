@@ -49,25 +49,42 @@ jobs:
           test
   deploy:
     needs: validate
-    runs-on: [self-hosted, linux, x64, drawio-backend]
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - uses: actions/setup-java@v4
-        with:
-          distribution: temurin
-          java-version: '17'
-      - name: Package the production JAR
+      - name: Configure SSH
+        env:
+          BACKEND_PRODUCTION_SSH_PRIVATE_KEY: ${{ secrets.BACKEND_PRODUCTION_SSH_PRIVATE_KEY }}
+          BACKEND_PRODUCTION_SSH_KNOWN_HOSTS: ${{ secrets.BACKEND_PRODUCTION_SSH_KNOWN_HOSTS }}
         run: |
           set -eu
-          mvn -s "$HOME/.m2/settings.xml" -B -ntp -DskipTests \
-            -Dmaven.wagon.http.connectionTimeout=20000 \
-            -Dmaven.wagon.http.readTimeout=120000 \
-            -Dmaven.wagon.http.retryHandler.count=2 \
-            package
-      - name: Build the backend image locally
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$BACKEND_PRODUCTION_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$BACKEND_PRODUCTION_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+      - name: Upload validated backend source
+        env:
+          BACKEND_PRODUCTION_HOST: ${{ secrets.BACKEND_PRODUCTION_HOST }}
+          BACKEND_PRODUCTION_PORT: ${{ secrets.BACKEND_PRODUCTION_PORT }}
         run: |
           set -eu
-          docker build -f draw-io-front-harry-app/Dockerfile \
-            -t "drawio-backend:$GITHUB_SHA" draw-io-front-harry-app
-      - name: Restart the backend with the local image
-        run: sudo /usr/local/sbin/deploy-drawio-backend "$GITHUB_SHA"
+          RELEASE="$GITHUB_SHA"
+          SSH="ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes -o ConnectTimeout=20 -o ConnectionAttempts=2 -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes -p $BACKEND_PRODUCTION_PORT"
+          $SSH "backend-deploy@$BACKEND_PRODUCTION_HOST" "install -d -m 700 /home/backend-deploy/staging/$RELEASE"
+          rsync -a --delete --info=progress2 --timeout=300 \
+            --exclude '.git/' --exclude 'target/' --exclude '.worktrees/' \
+            -e "$SSH" ./ "backend-deploy@$BACKEND_PRODUCTION_HOST:/home/backend-deploy/staging/$RELEASE/"
+          printf '%s\n' "$RELEASE" | $SSH "backend-deploy@$BACKEND_PRODUCTION_HOST" \
+            'cat > /home/backend-deploy/staging/release'
+      - name: Build and restart the backend on the production server
+        env:
+          BACKEND_PRODUCTION_HOST: ${{ secrets.BACKEND_PRODUCTION_HOST }}
+          BACKEND_PRODUCTION_PORT: ${{ secrets.BACKEND_PRODUCTION_PORT }}
+        run: |
+          set -eu
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ConnectTimeout=20 -o ConnectionAttempts=2 \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes \
+            -p "$BACKEND_PRODUCTION_PORT" "backend-deploy@$BACKEND_PRODUCTION_HOST" \
+            'sudo /usr/local/sbin/deploy-drawio-backend'
