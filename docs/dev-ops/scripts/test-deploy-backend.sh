@@ -12,9 +12,13 @@ if grep -Fq 'mvn -B -ntp -DskipTests package' "$DEPLOY_SCRIPT"; then
 fi
 grep -Fq 'install -o root -g root -m 750 "$APP_DIR/docs/dev-ops/scripts/deploy-backend.sh"' "$DEPLOY_SCRIPT"
 
-grep -Fq 'actions/upload-artifact@v4' "$WORKFLOW"
-grep -Fq 'actions/download-artifact@v4' "$WORKFLOW"
-grep -Fq 'draw-io-front-harry-app/target/ai-agent-scaffold-app.jar' "$WORKFLOW"
+grep -Fq 'docker/login-action@v3' "$WORKFLOW"
+grep -Fq 'docker/build-push-action@v6' "$WORKFLOW"
+grep -Fq 'TCR_REGISTRY' "$WORKFLOW"
+grep -Fq 'tags:' "$WORKFLOW"
 grep -Fq 'ServerAliveInterval=30' "$WORKFLOW"
 grep -Fq 'ConnectTimeout=20' "$WORKFLOW"
-grep -Fq -- '--info=progress2 --timeout=300' "$WORKFLOW"
+if grep -Fq 'rsync ' "$WORKFLOW" || grep -Fq 'actions/upload-artifact@v4' "$WORKFLOW"; then
+  echo "TCR deployment workflow must not upload source or artifacts to the server" >&2
+  exit 1
+fi
