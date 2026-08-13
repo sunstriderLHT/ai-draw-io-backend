@@ -192,7 +192,10 @@ AI_EMBEDDINGS_PATH=embeddings
 限制文件权限：
 
 ```bash
-chmod 600 .env
+if ! chmod 600 .env; then
+  echo "错误：无法把 .env 权限限制为 600" >&2
+  exit 1
+fi
 ```
 
 Docker Compose 的后端服务应显式读取该文件：
@@ -417,7 +420,20 @@ if ! existing_container="$(sudo docker container ls -a \
   exit 1
 fi
 
+ROLLBACK_MARKER_FILE="/home/ubuntu/drawio-backend/.rollback-source-image"
+
 if [ -z "$existing_container" ]; then
+  if ! stale_backup_image_ids="$(sudo docker image ls \
+    --quiet --no-trunc drawio-backend:before-production-deploy)"; then
+    echo "错误：无法检查陈旧回滚标签，停止首次部署" >&2
+    exit 1
+  fi
+
+  if [ -n "$stale_backup_image_ids" ] || [ -e "$ROLLBACK_MARKER_FILE" ]; then
+    echo "错误：首次部署检测到陈旧回滚来源；请先人工核实并隔离旧标签和凭证" >&2
+    exit 1
+  fi
+
   echo "FIRST_DEPLOY_NO_ROLLBACK_SOURCE：未找到旧容器，本次按首次部署继续"
 elif [ "$existing_container" = "drawio-backend" ]; then
   if ! running_state="$(sudo docker inspect \
@@ -447,6 +463,35 @@ elif [ "$existing_container" = "drawio-backend" ]; then
       "$running_image_id" \
       drawio-backend:before-production-deploy; then
       echo "错误：无法创建回滚镜像标签，停止部署" >&2
+      exit 1
+    fi
+
+    if ! backup_image_id="$(sudo docker image inspect \
+      --format '{{.Id}}' drawio-backend:before-production-deploy)"; then
+      echo "错误：无法验证新建的回滚标签，停止部署" >&2
+      exit 1
+    fi
+
+    if [ "$backup_image_id" != "$running_image_id" ]; then
+      echo "错误：回滚标签与当前运行镜像 ID 不一致，停止部署" >&2
+      exit 1
+    fi
+
+    rollback_marker_tmp="${ROLLBACK_MARKER_FILE}.tmp.$$"
+    if ! printf '%s\n' "$running_image_id" >"$rollback_marker_tmp"; then
+      echo "错误：无法写入临时回滚凭证，停止部署" >&2
+      exit 1
+    fi
+
+    if ! chmod 600 "$rollback_marker_tmp"; then
+      rm -f "$rollback_marker_tmp"
+      echo "错误：无法限制回滚凭证权限，停止部署" >&2
+      exit 1
+    fi
+
+    if ! mv -f "$rollback_marker_tmp" "$ROLLBACK_MARKER_FILE"; then
+      rm -f "$rollback_marker_tmp"
+      echo "错误：无法发布本次部署的回滚凭证，停止部署" >&2
       exit 1
     fi
   else
@@ -480,16 +525,44 @@ if [ -z "$RELEASE_DIRECTORY" ] || [ "$RELEASE_DIRECTORY" = "CHANGE_ME" ]; then
   exit 1
 fi
 
+case "$RELEASE_DIRECTORY" in
+  /*) ;;
+  *) echo "错误：RELEASE_DIRECTORY 必须是绝对路径" >&2; exit 1 ;;
+esac
+
+if ! RELEASE_DIRECTORY="$(realpath -e -- "$RELEASE_DIRECTORY")"; then
+  echo "错误：无法解析 RELEASE_DIRECTORY" >&2
+  exit 1
+fi
+
 if [ ! -f "$RELEASE_DIRECTORY/docs/dev-ops/docker-compose-production.yml" ]; then
   echo "错误：发布目录中不存在生产 Compose 文件" >&2
   exit 1
 fi
 
-cd /home/ubuntu/drawio-backend
-install -m 644 \
+if ! cd /home/ubuntu/drawio-backend; then
+  echo "错误：无法进入后端部署目录" >&2
+  exit 1
+fi
+
+compose_tmp="./docker-compose-production.yml.tmp.$$"
+if ! install -m 644 \
   "$RELEASE_DIRECTORY/docs/dev-ops/docker-compose-production.yml" \
-  ./docker-compose-production.yml
-mkdir -p ./log
+  "$compose_tmp"; then
+  echo "错误：无法复制生产 Compose 文件" >&2
+  exit 1
+fi
+
+if ! mv -f "$compose_tmp" ./docker-compose-production.yml; then
+  rm -f "$compose_tmp"
+  echo "错误：无法发布生产 Compose 文件" >&2
+  exit 1
+fi
+
+if ! mkdir -p ./log; then
+  echo "错误：无法创建日志目录" >&2
+  exit 1
+fi
 ```
 
 只在网络不存在时创建，已有网络不会被修改：
@@ -507,14 +580,43 @@ sudo docker network inspect software_my-network >/dev/null 2>&1 \
 ```bash
 SERVER_PRIVATE_ENV_SOURCE="${SERVER_PRIVATE_ENV_SOURCE:-}"
 if [ -z "$SERVER_PRIVATE_ENV_SOURCE" ] \
-  || [ "$SERVER_PRIVATE_ENV_SOURCE" = "CHANGE_ME" ] \
-  || [ ! -f "$SERVER_PRIVATE_ENV_SOURCE" ]; then
+  || [ "$SERVER_PRIVATE_ENV_SOURCE" = "CHANGE_ME" ]; then
   echo "错误：请先设置有效的 SERVER_PRIVATE_ENV_SOURCE" >&2
   exit 1
 fi
 
-install -m 600 "$SERVER_PRIVATE_ENV_SOURCE" ./.env
-test "$(stat -c '%a' .env)" = "600"
+case "$SERVER_PRIVATE_ENV_SOURCE" in
+  /*) ;;
+  *) echo "错误：SERVER_PRIVATE_ENV_SOURCE 必须是绝对路径" >&2; exit 1 ;;
+esac
+
+if ! SERVER_PRIVATE_ENV_SOURCE="$(realpath -e -- "$SERVER_PRIVATE_ENV_SOURCE")"; then
+  echo "错误：无法解析 SERVER_PRIVATE_ENV_SOURCE" >&2
+  exit 1
+fi
+
+if [ ! -f "$SERVER_PRIVATE_ENV_SOURCE" ]; then
+  echo "错误：SERVER_PRIVATE_ENV_SOURCE 不是普通文件" >&2
+  exit 1
+fi
+
+env_tmp="./.env.tmp.$$"
+if ! install -m 600 "$SERVER_PRIVATE_ENV_SOURCE" "$env_tmp"; then
+  echo "错误：无法复制服务器私密环境文件" >&2
+  exit 1
+fi
+
+if [ "$(stat -c '%a' "$env_tmp")" != "600" ]; then
+  rm -f "$env_tmp"
+  echo "错误：临时环境文件权限不是 600" >&2
+  exit 1
+fi
+
+if ! mv -f "$env_tmp" ./.env; then
+  rm -f "$env_tmp"
+  echo "错误：无法原子替换 .env，旧文件保持不变" >&2
+  exit 1
+fi
 ```
 
 `.env` 必须保留在服务器，不能进入 Git 或镜像层。
@@ -648,8 +750,16 @@ fi
 下面的命令从终端静默读取 Supabase Access Token，并写入权限为 `600` 的临时 curl 配置。配置通过标准输入传入容器，因此 Token 不会出现在 `docker run` 的命令参数或容器的 `Config.Cmd` 中。请求完成或脚本中断时都会清除临时文件和 shell 变量：
 
 ```bash
-curl_config="$(mktemp)"
-chmod 600 "$curl_config"
+if ! curl_config="$(mktemp)"; then
+  echo "错误：无法创建临时 curl 配置" >&2
+  exit 1
+fi
+
+if ! chmod 600 "$curl_config"; then
+  rm -f "$curl_config"
+  echo "错误：无法限制临时 curl 配置权限" >&2
+  exit 1
+fi
 
 cleanup_quota_auth() {
   rm -f "$curl_config"
@@ -659,7 +769,11 @@ trap cleanup_quota_auth EXIT HUP INT TERM
 
 read -r -s -p 'Supabase Access Token: ' ACCESS_TOKEN
 printf '\n'
-printf 'header = "Authorization: Bearer %s"\n' "$ACCESS_TOKEN" >"$curl_config"
+if ! printf 'header = "Authorization: Bearer %s"\n' \
+  "$ACCESS_TOKEN" >"$curl_config"; then
+  echo "错误：无法写入临时 curl 配置" >&2
+  exit 1
+fi
 unset ACCESS_TOKEN
 
 if ! quota_response="$(sudo docker run --rm -i --network deploy_app \
@@ -696,7 +810,38 @@ echo "内部额度请求通过：STATUS=200，JSON 字段完整"
 只有 `drawio-backend:before-production-deploy` 存在时才执行回滚。回滚会使用旧镜像重建后端容器，但不会反向执行 Flyway、删除额度数据、删除卷或删除网络：
 
 ```bash
-cd /home/ubuntu/drawio-backend
+if ! cd /home/ubuntu/drawio-backend; then
+  echo "错误：无法进入后端部署目录" >&2
+  exit 1
+fi
+
+ROLLBACK_MARKER_FILE="/home/ubuntu/drawio-backend/.rollback-source-image"
+
+if [ ! -f "$ROLLBACK_MARKER_FILE" ]; then
+  echo "错误：本次升级没有可信回滚凭证，禁止使用可能陈旧的回滚标签" >&2
+  exit 1
+fi
+
+if ! rollback_source_image_id="$(cat "$ROLLBACK_MARKER_FILE")"; then
+  echo "错误：无法读取本次升级的回滚凭证" >&2
+  exit 1
+fi
+
+if [ -z "$rollback_source_image_id" ]; then
+  echo "错误：本次升级的回滚凭证为空" >&2
+  exit 1
+fi
+
+if ! backup_image_id="$(sudo docker image inspect \
+  --format '{{.Id}}' drawio-backend:before-production-deploy)"; then
+  echo "错误：回滚镜像不存在，停止回滚" >&2
+  exit 1
+fi
+
+if [ "$rollback_source_image_id" != "$backup_image_id" ]; then
+  echo "错误：回滚标签与本次升级凭证不一致，停止回滚" >&2
+  exit 1
+fi
 
 printf '%s\n' '回滚前必须确认旧版本与当前 Flyway schema 向前兼容。'
 printf '%s' '已完成兼容性评审并批准回滚？输入 ROLLBACK_SCHEMA_APPROVED：'
@@ -704,12 +849,6 @@ read -r rollback_schema_approval
 
 if [ "$rollback_schema_approval" != "ROLLBACK_SCHEMA_APPROVED" ]; then
   echo "错误：未明确确认 schema 兼容性，停止回滚" >&2
-  exit 1
-fi
-
-if ! sudo docker image inspect \
-  drawio-backend:before-production-deploy >/dev/null 2>&1; then
-  echo "错误：回滚镜像不存在，停止回滚" >&2
   exit 1
 fi
 

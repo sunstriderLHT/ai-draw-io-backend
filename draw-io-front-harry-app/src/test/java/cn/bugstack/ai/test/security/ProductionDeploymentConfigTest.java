@@ -59,6 +59,18 @@ public class ProductionDeploymentConfigTest {
         assertTrue(runbook.contains("elif [ \"$existing_container\" = \"drawio-backend\" ]"));
         assertTrue(runbook.contains("RELEASE_DIRECTORY=\"${RELEASE_DIRECTORY:-}\""));
         assertTrue(runbook.contains("SERVER_PRIVATE_ENV_SOURCE=\"${SERVER_PRIVATE_ENV_SOURCE:-}\""));
+        assertTrue(runbook.contains("ROLLBACK_MARKER_FILE="));
+        assertTrue(runbook.contains("首次部署检测到陈旧回滚来源"));
+        assertTrue(runbook.contains("backup_image_id"));
+        assertTrue(runbook.contains("if [ \"$rollback_source_image_id\" != \"$backup_image_id\" ]"));
+        assertTrue(runbook.contains("case \"$RELEASE_DIRECTORY\" in"));
+        assertTrue(runbook.contains("case \"$SERVER_PRIVATE_ENV_SOURCE\" in"));
+        assertTrue(runbook.contains("realpath -e -- \"$RELEASE_DIRECTORY\""));
+        assertTrue(runbook.contains("realpath -e -- \"$SERVER_PRIVATE_ENV_SOURCE\""));
+        assertTrue(runbook.contains("if ! install -m 644"));
+        assertTrue(runbook.contains("if ! install -m 600"));
+        assertTrue(runbook.contains("if ! mkdir -p ./log"));
+        assertTrue(runbook.contains("if ! chmod 600 \"$curl_config\""));
         assertFalse(runbook.contains("-H \"Authorization: Bearer $ACCESS_TOKEN\""));
         assertFalse(runbook.contains("if sudo ss -lntp | grep"));
         assertFalse(runbook.contains("sudo nginx -s reload"));
