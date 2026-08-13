@@ -1,6 +1,6 @@
 services:
   backend:
-    image: drawio-backend:latest
+    image: ${DRAWIO_BACKEND_IMAGE:?DRAWIO_BACKEND_IMAGE must be set}
     container_name: drawio-backend
     restart: unless-stopped
     env_file:

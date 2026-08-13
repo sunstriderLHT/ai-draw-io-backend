@@ -2,49 +2,34 @@
 set -eu
 
 APP_DIR=/home/ubuntu/drawio-backend
-STAGING_ROOT=/home/backend-deploy/staging
-RELEASE_FILE="$STAGING_ROOT/release"
 ENV_FILE="$APP_DIR/.env"
 COMPOSE_FILE="$APP_DIR/docker-compose-production.yml"
+DEPLOY_CONFIG=/etc/drawio-backend-deploy.conf
 
-test ! -L "$RELEASE_FILE"
-test -f "$RELEASE_FILE"
-RELEASE="$(cat "$RELEASE_FILE")"
+if [ "$#" -ne 1 ]; then
+  echo "usage: $0 <40-character-lowercase-git-sha>" >&2
+  exit 1
+fi
+
+RELEASE="$1"
 if ! printf '%s\n' "$RELEASE" | grep -Eq '^[0-9a-f]{40}$'; then
   echo "release must be a 40-character lowercase hexadecimal Git SHA" >&2
   exit 1
 fi
 
-SOURCE_DIR="$STAGING_ROOT/$RELEASE"
-test ! -L "$SOURCE_DIR"
-test -d "$SOURCE_DIR"
-test -f "$SOURCE_DIR/pom.xml"
-test -f "$SOURCE_DIR/draw-io-front-harry-app/Dockerfile"
-test -f "$SOURCE_DIR/draw-io-front-harry-app/target/ai-agent-scaffold-app.jar"
-test -f "$SOURCE_DIR/docs/dev-ops/docker-compose-production.yml"
+test ! -L "$DEPLOY_CONFIG"
+test -f "$DEPLOY_CONFIG"
+# This file is root-owned and mode 600; it pins the only image repository a
+# restricted deployment account may release from.
+. "$DEPLOY_CONFIG"
+: "${IMAGE_REPOSITORY:?IMAGE_REPOSITORY must be set in $DEPLOY_CONFIG}"
+
 test -f "$ENV_FILE"
+test -f "$COMPOSE_FILE"
+IMAGE="$IMAGE_REPOSITORY:$RELEASE"
 
-if find "$SOURCE_DIR" -type l -print -quit | grep -q .; then
-  echo "staged source must not contain symbolic links" >&2
-  exit 1
-fi
-
-cleanup() {
-  rm -rf -- "$SOURCE_DIR"
-  rm -f -- "$RELEASE_FILE"
-}
-trap cleanup EXIT HUP INT TERM
-
-rsync -a --delete --exclude=.env --exclude=log/ \
-  "$SOURCE_DIR/" "$APP_DIR/"
-install -m 644 "$APP_DIR/docs/dev-ops/docker-compose-production.yml" "$COMPOSE_FILE"
-install -o root -g root -m 750 "$APP_DIR/docs/dev-ops/scripts/deploy-backend.sh" \
-  /usr/local/sbin/deploy-drawio-backend
-mkdir -p "$APP_DIR/log"
-
-cd "$APP_DIR"
-docker build -f draw-io-front-harry-app/Dockerfile \
-  -t drawio-backend:latest draw-io-front-harry-app
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --no-deps backend
-docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps --status running --services \
-  | grep -qx backend
+docker pull "$IMAGE"
+DRAWIO_BACKEND_IMAGE="$IMAGE" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+  up -d --no-deps backend
+DRAWIO_BACKEND_IMAGE="$IMAGE" docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" \
+  ps --status running --services | grep -qx backend
