@@ -44,6 +44,9 @@ public class ProductionDeploymentConfigTest {
         assertTrue(runbook.contains("if ! sudo docker tag"));
         assertTrue(runbook.contains("if ! sudo docker compose"));
         assertTrue(runbook.contains("回滚镜像不存在，停止回滚"));
+        assertTrue(runbook.contains("if ! ss_output=\"$(sudo ss -lntp)\""));
+        assertTrue(runbook.contains("无法读取宿主机监听端口"));
         assertFalse(runbook.contains("-H \"Authorization: Bearer $ACCESS_TOKEN\""));
+        assertFalse(runbook.contains("if sudo ss -lntp | grep"));
     }
 }

@@ -546,7 +546,13 @@ echo "内部未鉴权请求通过：STATUS=401，JSON AUTH_TOKEN_INVALID"
 确认宿主机没有监听 `8091`：
 
 ```bash
-if sudo ss -lntp | grep -qE '(^|[[:space:]])[^[:space:]]*:8091[[:space:]]'; then
+if ! ss_output="$(sudo ss -lntp)"; then
+  echo "错误：无法读取宿主机监听端口" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$ss_output" \
+  | grep -qE '(^|[[:space:]])[^[:space:]]*:8091[[:space:]]'; then
   echo "错误：宿主机正在监听 8091" >&2
   exit 1
 else
