@@ -6,6 +6,4 @@ import lombok.Data;
 public class CreateSessionRequestDTO {
 
     private String agentId;
-
-    private String userId;
 }

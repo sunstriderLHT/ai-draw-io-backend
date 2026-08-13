@@ -6,40 +6,43 @@ ai:
         agentDrawIo:
           app-name: agentDrawIo
           agent:
-            agent-id: "${DRAW_IO_AGENT_ID:100005}"
+            agent-id: "${DRAW_IO_AGENT_ID:100004}"
             agent-name: Draw.io 智能绘图
             agent-desc: 对绘图诉求进行澄清、检索、规划、生成和质量检查
           module:
             ai-api:
               base-uri: "${AI_BASE_URI}"
-              api-key: "${AI_API_KEY}"
-              completions-path: "${AI_COMPLETIONS_PATH:chat/completions}"
-              embeddings-path: "${AI_EMBEDDINGS_PATH:embeddings}"
+              api-key: "${AI_MODEL_API_KEY}"
+              completions-path: chat/completions
+              embeddings-path: embeddings
             chat-model:
               model: "${AI_MODEL}"
               tool-mcp-list:
-                - local:
-                    name: myToolCallbackProvider
-                # Optional SSE MCP template. Uncomment and set every value through environment variables.
-                # - sse:
-                #     name: "${DRAW_IO_MCP_SSE_NAME}"
-                #     base-uri: "${DRAW_IO_MCP_SSE_BASE_URI}"
-                #     sse-endpoint: "${DRAW_IO_MCP_SSE_ENDPOINT}"
-                #     request-timeout: "${DRAW_IO_MCP_SSE_REQUEST_TIMEOUT:30000}"
-                # Optional stdio MCP template for repository or local-file research. Uncomment and set every value through environment variables.
-                # - stdio:
-                #     name: "${DRAW_IO_MCP_STDIO_NAME}"
-                #     request-timeout: "${DRAW_IO_MCP_STDIO_REQUEST_TIMEOUT:30}"
-                #     server-parameters:
-                #       command: "${DRAW_IO_MCP_STDIO_COMMAND}"
-                #       args:
-                #         - "${DRAW_IO_MCP_STDIO_ARG}"
-                #       env:
-                #         DRAW_IO_REPOSITORY: "${DRAW_IO_REPOSITORY}"
-                #         DRAW_IO_LOCAL_FILE_ROOT: "${DRAW_IO_LOCAL_FILE_ROOT}"
-              tool-skills-list:
-                - type: resource
-                  path: agent/skills
+                - sse:
+                    name: "${DRAW_IO_MCP_SSE_NAME}"
+                    base-uri: "${DRAW_IO_MCP_SSE_BASE_URI}"
+                    sse-endpoint: "${DRAW_IO_MCP_SSE_ENDPOINT}"
+                    request-timeout: "${DRAW_IO_MCP_SSE_REQUEST_TIMEOUT:50000}"
+              # Optional MCP templates. Enable only tools that are relevant to diagram research.
+              # tool-mcp-list:
+              #   - sse:
+              #       name: "${DRAW_IO_MCP_SSE_NAME}"
+              #       base-uri: "${DRAW_IO_MCP_SSE_BASE_URI}"
+              #       sse-endpoint: "${DRAW_IO_MCP_SSE_ENDPOINT}"
+              #       request-timeout: "${DRAW_IO_MCP_SSE_REQUEST_TIMEOUT:30000}"
+              #   - stdio:
+              #       name: "${DRAW_IO_MCP_STDIO_NAME}"
+              #       request-timeout: "${DRAW_IO_MCP_STDIO_REQUEST_TIMEOUT:30}"
+              #       server-parameters:
+              #         command: "${DRAW_IO_MCP_STDIO_COMMAND}"
+              #         args:
+              #           - "${DRAW_IO_MCP_STDIO_ARG}"
+              #         env:
+              #           DRAW_IO_REPOSITORY: "${DRAW_IO_REPOSITORY}"
+              #           DRAW_IO_LOCAL_FILE_ROOT: "${DRAW_IO_LOCAL_FILE_ROOT}"
+#              tool-skills-list:
+#                - type: resource
+#                  path: agent/skills
             agents:
               - name: RequestAnalystAgent
                 description: 澄清绘图需求并判断是否具备绘图前提。
@@ -84,21 +87,22 @@ ai:
               - name: DrawioQualityAgent
                 description: 修复 Draw.io XML 的结构、语义与布局质量问题。
                 instruction: |
-                  Consume {drawio_xml}. Preserve the exact skip marker if present; otherwise return only corrected XML.
+                  Consume {drawio_xml}. Preserve the exact upstream marker SKIPPED: drawing prerequisites are incomplete if present.
+                  If the input starts with QUALITY_RETRY_REQUIRED:, extract the attached XML and actively retry validation and correction. Do not preserve the prefix without making another correction attempt.
                   Check XML structure, escaping, unique IDs, references, semantics, overlaps, text space, margins, isolated nodes, edge directions, edge crossings, node crossings, and unnecessary back edges.
                   检查连线交叉、节点交叉和布局可读性，并保持完整未压缩的 <mxfile> 文档。
-                  If the XML remains structurally or semantically unreliable after the available quality pass, return exactly: QUALITY_FAILED: Draw.io XML remains unreliable after two quality passes
+                  If the XML is reliable, return only the complete corrected <mxfile> XML. If it remains structurally or semantically unreliable, return QUALITY_RETRY_REQUIRED: immediately followed by the best current complete XML.
                 output-key: drawio_xml
               - name: FinalResponseAgent
                 description: 仅向用户返回固定 JSON 响应协议。
                 instruction: |
-                  Consume {request_analysis}, {research_context}, {diagram_plan}, and {drawio_xml}.
+                  Consume {request_analysis}, {research_context?}, {diagram_plan?}, and {drawio_xml?}.
                   Return only one JSON object with exactly two fields: type and content. Do not return Markdown or explanation.
                   For incomplete, blocked, or skipped states, emit type=user with non-empty content selected in this priority order: request_analysis.clarificationQuestion, research_context.blockReason, diagram_plan.skipReason, then a useful explanation of what the user must provide.
-                  If {drawio_xml} is exactly QUALITY_FAILED: Draw.io XML remains unreliable after two quality passes, emit type=user with a useful non-empty explanation that the drawing could not be made reliable and what information should be clarified or simplified.
+                  If {drawio_xml?} starts with QUALITY_RETRY_REQUIRED:, emit type=user with a useful non-empty explanation that the drawing could not be made reliable and what information should be clarified or simplified. Never expose the attached XML.
                   Emit {"type":"user","content":"Please specify the relationships between Order and Payment."} as the shape of a user response; never emit an empty content value.
-                  Emit type=drawio only when {drawio_xml} is a quality-approved complete <mxfile> document. Its content must be the entire {drawio_xml} document after standard JSON escaping for quotes, backslashes, newlines, and control characters.
-                  The drawio response shape is {"type":"drawio","content":"<entire escaped {drawio_xml} document>"}.
+                  Emit type=drawio only when {drawio_xml?} is a quality-approved complete <mxfile> document. Its content must be the entire {drawio_xml?} document after standard JSON escaping for quotes, backslashes, newlines, and control characters.
+                  The drawio response shape is {"type":"drawio","content":"<ENTIRE_ESCAPED_DRAWIO_XML>"}.
             agent-workflows:
               - type: parallel
                 name: ParallelUnderstandingWorkflow
@@ -112,17 +116,27 @@ ai:
                 max-iterations: 2
                 sub-agents:
                   - DrawioQualityAgent
+              - type: conditional
+                name: ReadyDrawingWorkflow
+                description: 仅在需求信息完整时执行绘图和质量检查。
+                condition-state-key: request_analysis
+                condition-json-field: status
+                condition-expected-value: READY
+                sub-agents:
+                  - ParallelUnderstandingWorkflow
+                  - DiagramPlannerAgent
+                  - DrawioGeneratorAgent
+                  - DrawioQualityLoop
               - type: sequential
                 name: DrawioPipeline
                 description: 串行编排完整的 Draw.io 绘图流程。
                 sub-agents:
                   - RequestAnalystAgent
-                  - ParallelUnderstandingWorkflow
-                  - DiagramPlannerAgent
-                  - DrawioGeneratorAgent
-                  - DrawioQualityLoop
+                  - ReadyDrawingWorkflow
                   - FinalResponseAgent
             runner:
               agent-name: DrawioPipeline
               response-agent-name: FinalResponseAgent
-              output-mode: FINAL_ONLY
+              output-mode: FINAL_WITH_TRACE
+              plugin-name-list:
+                - myLogPlugin

@@ -1,0 +1,175 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE mapper
+        PUBLIC "-//mybatis.org//DTD Mapper 3.0//EN"
+        "http://mybatis.org/dtd/mybatis-3-mapper.dtd">
+
+<mapper namespace="cn.bugstack.ai.infrastructure.dao.IAiQuotaLedgerDao">
+
+    <resultMap
+            id="aiQuotaLedgerMap"
+            type="cn.bugstack.ai.infrastructure.dao.po.AiQuotaLedgerPO">
+        <id column="id" property="id"/>
+        <result column="request_id" property="requestId"/>
+        <result column="user_id" property="userId"/>
+        <result column="agent_id" property="agentId"/>
+        <result column="endpoint" property="endpoint"/>
+        <result column="entry_type" property="entryType"/>
+        <result column="amount" property="amount"/>
+        <result column="status" property="status"/>
+        <result column="source_ref" property="sourceRef"/>
+        <result column="created_at" property="createdAt"/>
+        <result column="updated_at" property="updatedAt"/>
+    </resultMap>
+
+    <insert
+            id="insertIgnoreFreeGrant"
+            parameterType="cn.bugstack.ai.infrastructure.dao.po.AiQuotaLedgerPO">
+        INSERT IGNORE INTO ai_quota_ledger (
+            request_id,
+            user_id,
+            agent_id,
+            endpoint,
+            entry_type,
+            amount,
+            status,
+            source_ref,
+            created_at,
+            updated_at
+        ) VALUES (
+            #{requestId},
+            #{userId},
+            #{agentId},
+            #{endpoint},
+            #{entryType},
+            #{amount},
+            #{status},
+            #{sourceRef},
+            UTC_TIMESTAMP(3),
+            UTC_TIMESTAMP(3)
+        )
+    </insert>
+
+    <select
+            id="selectByUserAndRequestForUpdate"
+            resultMap="aiQuotaLedgerMap">
+        SELECT
+            id,
+            request_id,
+            user_id,
+            agent_id,
+            endpoint,
+            entry_type,
+            amount,
+            status,
+            source_ref,
+            created_at,
+            updated_at
+        FROM ai_quota_ledger
+        WHERE user_id = #{userId}
+          AND request_id = #{requestId}
+        FOR UPDATE
+    </select>
+
+    <insert
+            id="insertReservation"
+            parameterType="cn.bugstack.ai.infrastructure.dao.po.AiQuotaLedgerPO">
+        INSERT INTO ai_quota_ledger (
+            request_id,
+            user_id,
+            agent_id,
+            endpoint,
+            entry_type,
+            amount,
+            status,
+            source_ref,
+            created_at,
+            updated_at
+        ) VALUES (
+            #{requestId},
+            #{userId},
+            #{agentId},
+            #{endpoint},
+            #{entryType},
+            #{amount},
+            #{status},
+            #{sourceRef},
+            UTC_TIMESTAMP(3),
+            UTC_TIMESTAMP(3)
+        )
+    </insert>
+
+    <update id="reactivateReleased">
+        UPDATE ai_quota_ledger
+        SET agent_id = #{agentId},
+            endpoint = #{endpoint},
+            status = 'RESERVED',
+            updated_at = UTC_TIMESTAMP(3)
+        WHERE user_id = #{userId}
+          AND request_id = #{requestId}
+          AND status = 'RELEASED'
+    </update>
+
+    <update id="commitReservation">
+        UPDATE ai_quota_ledger
+        SET status = 'COMMITTED',
+            updated_at = UTC_TIMESTAMP(3)
+        WHERE user_id = #{userId}
+          AND request_id = #{requestId}
+          AND status = 'RESERVED'
+    </update>
+
+    <update id="releaseReservation">
+        UPDATE ai_quota_ledger
+        SET status = 'RELEASED',
+            updated_at = UTC_TIMESTAMP(3)
+        WHERE user_id = #{userId}
+          AND request_id = #{requestId}
+          AND status = 'RESERVED'
+    </update>
+
+    <select
+            id="selectExpiredReservations"
+            resultMap="aiQuotaLedgerMap">
+        SELECT
+            id,
+            request_id,
+            user_id,
+            agent_id,
+            endpoint,
+            entry_type,
+            amount,
+            status,
+            source_ref,
+            created_at,
+            updated_at
+        FROM ai_quota_ledger
+        WHERE status = 'RESERVED'
+          AND updated_at &lt; #{cutoff}
+        ORDER BY updated_at
+        LIMIT 100
+    </select>
+
+    <select
+            id="selectExpiredReservationForUpdate"
+            resultMap="aiQuotaLedgerMap">
+        SELECT
+            id,
+            request_id,
+            user_id,
+            agent_id,
+            endpoint,
+            entry_type,
+            amount,
+            status,
+            source_ref,
+            created_at,
+            updated_at
+        FROM ai_quota_ledger
+        WHERE user_id = #{userId}
+          AND request_id = #{requestId}
+          AND status = 'RESERVED'
+          AND updated_at &lt; #{cutoff}
+            FOR UPDATE
+    </select>
+
+</mapper>
