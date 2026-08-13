@@ -1,0 +1,68 @@
+name: Deploy backend persist branch
+
+on:
+  push:
+    branches:
+      - persist
+    paths-ignore:
+      - 'docs/**'
+      - '**.md'
+
+permissions:
+  contents: read
+
+concurrency:
+  group: backend-production-deployment
+  cancel-in-progress: false
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+          cache: maven
+      - run: mvn -B -ntp test
+
+  deploy:
+    needs: validate
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Configure SSH
+        env:
+          BACKEND_PRODUCTION_SSH_PRIVATE_KEY: ${{ secrets.BACKEND_PRODUCTION_SSH_PRIVATE_KEY }}
+          BACKEND_PRODUCTION_SSH_KNOWN_HOSTS: ${{ secrets.BACKEND_PRODUCTION_SSH_KNOWN_HOSTS }}
+        run: |
+          set -eu
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$BACKEND_PRODUCTION_SSH_PRIVATE_KEY" > ~/.ssh/id_ed25519
+          chmod 600 ~/.ssh/id_ed25519
+          printf '%s\n' "$BACKEND_PRODUCTION_SSH_KNOWN_HOSTS" > ~/.ssh/known_hosts
+          chmod 600 ~/.ssh/known_hosts
+      - name: Upload validated backend source
+        env:
+          BACKEND_PRODUCTION_HOST: ${{ secrets.BACKEND_PRODUCTION_HOST }}
+          BACKEND_PRODUCTION_PORT: ${{ secrets.BACKEND_PRODUCTION_PORT }}
+        run: |
+          set -eu
+          RELEASE="$GITHUB_SHA"
+          SSH="ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes -p $BACKEND_PRODUCTION_PORT"
+          $SSH "backend-deploy@$BACKEND_PRODUCTION_HOST" "install -d -m 700 /home/backend-deploy/staging/$RELEASE"
+          rsync -a --delete --exclude '.git/' --exclude 'target/' --exclude '.worktrees/' \
+            -e "$SSH" ./ "backend-deploy@$BACKEND_PRODUCTION_HOST:/home/backend-deploy/staging/$RELEASE/"
+          printf '%s\n' "$RELEASE" | $SSH "backend-deploy@$BACKEND_PRODUCTION_HOST" \
+            'cat > /home/backend-deploy/staging/release'
+      - name: Rebuild the backend on the production server
+        env:
+          BACKEND_PRODUCTION_HOST: ${{ secrets.BACKEND_PRODUCTION_HOST }}
+          BACKEND_PRODUCTION_PORT: ${{ secrets.BACKEND_PRODUCTION_PORT }}
+        run: |
+          set -eu
+          ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -p "$BACKEND_PRODUCTION_PORT" "backend-deploy@$BACKEND_PRODUCTION_HOST" \
+            'sudo /usr/local/sbin/deploy-drawio-backend'
+
