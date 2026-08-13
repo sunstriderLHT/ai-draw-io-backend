@@ -4,9 +4,6 @@ on:
   push:
     branches:
       - persist
-    paths-ignore:
-      - 'docs/**'
-      - '**.md'
 
 permissions:
   contents: read
@@ -50,12 +47,26 @@ jobs:
           mvn -B -ntp -pl draw-io-front-harry-app -am -Dsurefire.failIfNoSpecifiedTests=false
           -Dtest=DependencySmokeTest,SupabaseSecurityTest,SupabaseClaimsValidatorTest,TrustedUserIdentityTest,AiQuotaServiceTest,MySqlAiQuotaRepositoryTest,MeteredSynchronousChatTest,MeteredStreamingChatTest,AiApiContractTest,AgentConfigSecretSafetyTest,QuotaReservationRecoveryJobTest,AgentStreamSubscriptionTest,AgentOutputEventMapperTest
           test
+      - name: Package the production JAR
+        run: mvn -B -ntp -DskipTests package
+      - name: Upload the production JAR
+        uses: actions/upload-artifact@v4
+        with:
+          name: backend-app-jar
+          path: draw-io-front-harry-app/target/ai-agent-scaffold-app.jar
+          if-no-files-found: error
+          retention-days: 1
 
   deploy:
     needs: validate
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Download the validated production JAR
+        uses: actions/download-artifact@v4
+        with:
+          name: backend-app-jar
+          path: draw-io-front-harry-app/target
       - name: Configure SSH
         env:
           BACKEND_PRODUCTION_SSH_PRIVATE_KEY: ${{ secrets.BACKEND_PRODUCTION_SSH_PRIVATE_KEY }}
@@ -74,10 +85,14 @@ jobs:
         run: |
           set -eu
           RELEASE="$GITHUB_SHA"
-          SSH="ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes -p $BACKEND_PRODUCTION_PORT"
+          SSH="ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes -p $BACKEND_PRODUCTION_PORT"
           $SSH "backend-deploy@$BACKEND_PRODUCTION_HOST" "install -d -m 700 /home/backend-deploy/staging/$RELEASE"
           rsync -a --delete --exclude '.git/' --exclude 'target/' --exclude '.worktrees/' \
             -e "$SSH" ./ "backend-deploy@$BACKEND_PRODUCTION_HOST:/home/backend-deploy/staging/$RELEASE/"
+          $SSH "backend-deploy@$BACKEND_PRODUCTION_HOST" \
+            "install -d -m 700 /home/backend-deploy/staging/$RELEASE/draw-io-front-harry-app/target"
+          rsync -a -e "$SSH" draw-io-front-harry-app/target/ai-agent-scaffold-app.jar \
+            "backend-deploy@$BACKEND_PRODUCTION_HOST:/home/backend-deploy/staging/$RELEASE/draw-io-front-harry-app/target/"
           printf '%s\n' "$RELEASE" | $SSH "backend-deploy@$BACKEND_PRODUCTION_HOST" \
             'cat > /home/backend-deploy/staging/release'
       - name: Rebuild the backend on the production server
@@ -87,5 +102,6 @@ jobs:
         run: |
           set -eu
           ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes \
+            -o ServerAliveInterval=30 -o ServerAliveCountMax=20 -o TCPKeepAlive=yes \
             -p "$BACKEND_PRODUCTION_PORT" "backend-deploy@$BACKEND_PRODUCTION_HOST" \
             'sudo /usr/local/sbin/deploy-drawio-backend'

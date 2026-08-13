@@ -20,6 +20,7 @@ test ! -L "$SOURCE_DIR"
 test -d "$SOURCE_DIR"
 test -f "$SOURCE_DIR/pom.xml"
 test -f "$SOURCE_DIR/draw-io-front-harry-app/Dockerfile"
+test -f "$SOURCE_DIR/draw-io-front-harry-app/target/ai-agent-scaffold-app.jar"
 test -f "$SOURCE_DIR/docs/dev-ops/docker-compose-production.yml"
 test -f "$ENV_FILE"
 
@@ -34,16 +35,16 @@ cleanup() {
 }
 trap cleanup EXIT HUP INT TERM
 
-rsync -a --delete --exclude=.env --exclude=log/ --exclude=target/ \
+rsync -a --delete --exclude=.env --exclude=log/ \
   "$SOURCE_DIR/" "$APP_DIR/"
 install -m 644 "$APP_DIR/docs/dev-ops/docker-compose-production.yml" "$COMPOSE_FILE"
+install -o root -g root -m 750 "$APP_DIR/docs/dev-ops/scripts/deploy-backend.sh" \
+  /usr/local/sbin/deploy-drawio-backend
 mkdir -p "$APP_DIR/log"
 
 cd "$APP_DIR"
-mvn -B -ntp -DskipTests package
 docker build -f draw-io-front-harry-app/Dockerfile \
   -t drawio-backend:latest draw-io-front-harry-app
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" up -d --no-deps backend
 docker compose --env-file "$ENV_FILE" -f "$COMPOSE_FILE" ps --status running --services \
   | grep -qx backend
-
