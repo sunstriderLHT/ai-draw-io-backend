@@ -1,0 +1,27 @@
+services:
+  backend:
+    image: drawio-backend:latest
+    container_name: drawio-backend
+    restart: unless-stopped
+    env_file:
+      - ${DRAWIO_BACKEND_ENV_FILE:-.env}
+    expose:
+      - "8091"
+    volumes:
+      - ./log:/app/data/log
+    networks:
+      - ingress
+      - database
+    logging:
+      driver: json-file
+      options:
+        max-size: 10m
+        max-file: "3"
+
+networks:
+  ingress:
+    external: true
+    name: deploy_app
+  database:
+    external: true
+    name: software_my-network

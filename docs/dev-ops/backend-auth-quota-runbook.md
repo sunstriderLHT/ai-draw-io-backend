@@ -201,14 +201,17 @@ Docker Compose 的后端服务应显式读取该文件：
 services:
   backend:
     env_file:
-      - .env
+      - ${DRAWIO_BACKEND_ENV_FILE:-.env}
 ```
 
-启动时也可以显式指定 Compose 环境文件：
+生产环境使用仓库提供的 `docker-compose-production.yml`，显式指定 Compose 环境文件并且只启动后端服务：
 
 ```bash
-sudo docker compose --env-file .env up -d --build
+sudo docker compose --env-file .env \
+  -f docker-compose-production.yml up -d backend
 ```
+
+该 Compose 文件只通过 `expose` 向 Docker 网络开放 `8091`，不会把 `8091` 发布到宿主机。
 
 ## 4. 数据库连接
 
@@ -398,3 +401,187 @@ sudo docker compose -f deploy/docker-compose.yml restart nginx
 - [ ] Flyway 迁移成功，额度表已创建。
 - [ ] 401、402、403、409 响应符合 API 契约。
 - [ ] Nginx 在联调完成前继续对 `/api/v1` 返回 404。
+
+## 12. 生产环境私网部署与回滚
+
+本节命令在服务器的 `/home/ubuntu/drawio-backend` 部署目录执行。生产部署只更新后端镜像和后端容器，不删除容器卷、证书、环境文件、数据库或外部网络。
+
+### 12.1 构建发布镜像
+
+先在完成代码检出的构建目录使用 Java 17 打包。只有 Maven 成功后，才允许执行镜像构建：
+
+```bash
+export JAVA_HOME=<jdk-17-directory>
+export PATH="$JAVA_HOME/bin:$PATH"
+
+if ! mvn -q -pl draw-io-front-harry-app -am -DskipTests package; then
+  echo "错误：Maven 打包失败，禁止构建生产镜像" >&2
+  exit 1
+fi
+
+if sudo docker image inspect drawio-backend:latest >/dev/null 2>&1; then
+  sudo docker tag \
+    drawio-backend:latest \
+    drawio-backend:before-production-deploy
+else
+  echo "当前没有 drawio-backend:latest，首次部署不生成回滚标签"
+fi
+
+sudo docker build \
+  -f draw-io-front-harry-app/Dockerfile \
+  -t drawio-backend:latest \
+  draw-io-front-harry-app
+```
+
+`draw-io-front-harry-app/Dockerfile` 会把 Maven 已测试并打包的 JAR 写入镜像。不要把宿主机上的可变 JAR bind mount 到生产容器。
+
+### 12.2 准备部署目录和私网
+
+把仓库中的 `docs/dev-ops/docker-compose-production.yml` 放到部署目录，并创建日志目录：
+
+```bash
+cd /home/ubuntu/drawio-backend
+install -m 644 \
+  <release-directory>/docs/dev-ops/docker-compose-production.yml \
+  ./docker-compose-production.yml
+mkdir -p ./log
+```
+
+只在网络不存在时创建，已有网络不会被修改：
+
+```bash
+sudo docker network inspect deploy_app >/dev/null 2>&1 \
+  || sudo docker network create deploy_app
+
+sudo docker network inspect software_my-network >/dev/null 2>&1 \
+  || sudo docker network create software_my-network
+```
+
+在 Compose 文件旁创建或复制服务器专用 `.env`，不要在终端回显其中的值：
+
+```bash
+install -m 600 <server-private-env-source> ./.env
+test "$(stat -c '%a' .env)" = "600"
+```
+
+`.env` 必须保留在服务器，不能进入 Git 或镜像层。
+
+### 12.3 启动后端
+
+先检查最终配置；输出只用于核对服务、网络和端口，不要分享包含敏感环境变量的完整输出：
+
+```bash
+sudo docker compose --env-file .env \
+  -f docker-compose-production.yml config --services
+
+sudo docker compose --env-file .env \
+  -f docker-compose-production.yml up -d backend
+
+sudo docker compose --env-file .env \
+  -f docker-compose-production.yml ps backend
+```
+
+该命令可能重建 `drawio-backend` 容器，但不会执行 `down`，也不会删除卷或外部网络。
+
+### 12.4 验证双网络和私有端口
+
+确认后端同时加入前端入口网络和数据库网络：
+
+```bash
+for network in deploy_app software_my-network; do
+  sudo docker network inspect "$network" \
+    --format '{{range $id, $container := .Containers}}{{println $container.Name}}{{end}}' \
+    | grep -Fx drawio-backend
+done
+```
+
+从 `deploy_app` 内部访问受保护接口。缺少 JWT 时应返回 HTTP 401，响应类型和正文应为 JSON：
+
+```bash
+sudo docker run --rm --network deploy_app curlimages/curl:8.10.1 \
+  -sS -D - \
+  http://drawio-backend:8091/api/v1/query_ai_agent_config_list
+```
+
+预期响应包含：
+
+```text
+HTTP/1.1 401
+Content-Type: application/json
+{"code":"AUTH_TOKEN_INVALID","info":"登录状态无效或已过期","data":null}
+```
+
+确认宿主机没有监听 `8091`：
+
+```bash
+if sudo ss -lntp | grep -qE '(^|[[:space:]])[^[:space:]]*:8091[[:space:]]'; then
+  echo "错误：宿主机正在监听 8091" >&2
+  exit 1
+else
+  echo "宿主机未监听 8091"
+fi
+```
+
+### 12.5 验证启动、迁移、Mapper 和额度回收任务
+
+查看本次启动日志，确认 Flyway 和 Spring Boot 正常启动：
+
+```bash
+sudo docker compose --env-file .env \
+  -f docker-compose-production.yml logs --since 10m backend \
+  | grep -E 'Successfully applied|Schema .* is up to date|Started Application'
+```
+
+至少等待一个 `AI_RESERVATION_RECOVERY_INTERVAL`，再确认 MyBatis Mapper 和额度回收定时任务没有异常：
+
+```bash
+if sudo docker compose --env-file .env \
+  -f docker-compose-production.yml logs --since 10m backend \
+  | grep -E 'BindingException|Invalid bound statement|Error parsing Mapper XML|Unexpected error occurred in scheduled task'; then
+  echo "错误：Mapper 加载或额度回收任务异常" >&2
+  exit 1
+else
+  echo "MyBatis Mapper 与额度回收任务无异常"
+fi
+```
+
+同时保留一次鉴权成功后的额度查询或聊天验收记录，确认数据库 Mapper 能执行真实读写；不要只根据容器处于 `Up` 状态判断部署成功。
+
+下面的命令从终端静默读取 Supabase Access Token，通过内部网络查询额度，并在请求完成后立即清除 shell 变量：
+
+```bash
+read -r -s -p 'Supabase Access Token: ' ACCESS_TOKEN
+printf '\n'
+
+sudo docker run --rm --network deploy_app curlimages/curl:8.10.1 \
+  -sS -D - \
+  -H "Authorization: Bearer $ACCESS_TOKEN" \
+  http://drawio-backend:8091/api/v1/quota
+
+unset ACCESS_TOKEN
+```
+
+预期为 HTTP 200 JSON，且 `data` 中包含 `freeGranted`、`purchasedGranted`、`consumed`、`reserved` 和 `remaining`。
+
+### 12.6 回滚后端镜像
+
+只有 `drawio-backend:before-production-deploy` 存在时才执行回滚。回滚会使用旧镜像重建后端容器，但不会反向执行 Flyway、删除额度数据、删除卷或删除网络：
+
+```bash
+cd /home/ubuntu/drawio-backend
+
+sudo docker image inspect \
+  drawio-backend:before-production-deploy >/dev/null
+
+sudo docker tag \
+  drawio-backend:before-production-deploy \
+  drawio-backend:latest
+
+sudo docker compose --env-file .env \
+  -f docker-compose-production.yml up -d --no-deps --force-recreate backend
+
+sudo docker compose --env-file .env \
+  -f docker-compose-production.yml ps backend
+```
+
+镜像回滚不等于数据库回滚。若新版本已执行 Flyway，必须先确认旧版本与当前 schema 兼容；不要手工删除 Flyway 记录或额度表。
