@@ -350,34 +350,11 @@ Idempotency-Key: <new-canonical-uuid>
 - `403`：用户不在白名单。
 - `409`：相同请求正在处理或已经完成。
 
-## 9. 回滚公网入口
+## 9. 公网入口由前端部署负责
 
-后端验证完成之前，Nginx 保持 API 入口返回 404：
+后端验证完成之前，公网 `/api/v1/` 应保持紧急关闭，避免请求转发到模型服务。Nginx 属于前端部署栈，后端运维手册不直接重载或重启入口容器。
 
-```nginx
-location = /api/v1 {
-    return 404;
-}
-
-location ^~ /api/v1/ {
-    return 404;
-}
-```
-
-重新加载 Nginx：
-
-```bash
-sudo nginx -t
-sudo nginx -s reload
-```
-
-使用 Docker Compose 部署时可以执行：
-
-```bash
-sudo docker compose -f deploy/docker-compose.yml restart nginx
-```
-
-这样前端仍可访问，但公网请求不会转发到后端，也不会消耗模型 Token。
+请严格执行前端仓库 `deploy/README.md` 中独立的 emergency API closure/restore procedure。该流程会校验前端生产 Compose、切换 API-blocked 配置并验证公网 404；恢复入口也必须使用同一份前端流程。
 
 ## 10. 故障排查
 
@@ -419,15 +396,38 @@ if ! mvn -q -pl draw-io-front-harry-app -am -DskipTests package; then
   exit 1
 fi
 
-if sudo docker image inspect drawio-backend:latest >/dev/null 2>&1; then
+if ! running_state="$(sudo docker inspect \
+  --format '{{.State.Running}}' drawio-backend)"; then
+  echo "错误：无法检查当前运行的 drawio-backend，停止部署" >&2
+  exit 1
+fi
+
+if [ "$running_state" != "true" ]; then
+  echo "错误：drawio-backend 当前未运行，无法创建可信回滚标签" >&2
+  exit 1
+fi
+
+if ! running_image_id="$(sudo docker inspect \
+  --format '{{.Image}}' drawio-backend)"; then
+  echo "错误：无法读取当前运行容器的不可变镜像 ID，停止部署" >&2
+  exit 1
+fi
+
+if [ -z "$running_image_id" ]; then
+  echo "错误：当前运行容器的镜像 ID 为空，停止部署" >&2
+  exit 1
+fi
+
+if sudo docker image inspect "$running_image_id" >/dev/null 2>&1; then
   if ! sudo docker tag \
-    drawio-backend:latest \
+    "$running_image_id" \
     drawio-backend:before-production-deploy; then
     echo "错误：无法创建回滚镜像标签，停止部署" >&2
     exit 1
   fi
 else
-  echo "当前没有 drawio-backend:latest，首次部署不生成回滚标签"
+  echo "错误：当前运行容器的镜像 ID 不可用，停止部署" >&2
+  exit 1
 fi
 
 if ! sudo docker build \
@@ -651,6 +651,15 @@ echo "内部额度请求通过：STATUS=200，JSON 字段完整"
 ```bash
 cd /home/ubuntu/drawio-backend
 
+printf '%s\n' '回滚前必须确认旧版本与当前 Flyway schema 向前兼容。'
+printf '%s' '已完成兼容性评审并批准回滚？输入 ROLLBACK_SCHEMA_APPROVED：'
+read -r rollback_schema_approval
+
+if [ "$rollback_schema_approval" != "ROLLBACK_SCHEMA_APPROVED" ]; then
+  echo "错误：未明确确认 schema 兼容性，停止回滚" >&2
+  exit 1
+fi
+
 if ! sudo docker image inspect \
   drawio-backend:before-production-deploy >/dev/null 2>&1; then
   echo "错误：回滚镜像不存在，停止回滚" >&2
@@ -677,4 +686,4 @@ if ! sudo docker compose --env-file .env \
 fi
 ```
 
-镜像回滚不等于数据库回滚。若新版本已执行 Flyway，必须先确认旧版本与当前 schema 兼容；不要手工删除 Flyway 记录或额度表。
+镜像回滚不等于数据库回滚。上述强制确认必须在恢复镜像标签和重建容器之前完成；不要手工删除 Flyway 记录或额度表。

@@ -46,7 +46,27 @@ public class ProductionDeploymentConfigTest {
         assertTrue(runbook.contains("回滚镜像不存在，停止回滚"));
         assertTrue(runbook.contains("if ! ss_output=\"$(sudo ss -lntp)\""));
         assertTrue(runbook.contains("无法读取宿主机监听端口"));
+        assertTrue(runbook.contains("running_image_id=\"$(sudo docker inspect"));
+        assertTrue(runbook.contains("--format '{{.Image}}' drawio-backend"));
+        assertTrue(runbook.contains("--format '{{.State.Running}}' drawio-backend"));
+        assertTrue(runbook.contains("if [ \"$running_state\" != \"true\" ]"));
+        assertTrue(runbook.contains("\"$running_image_id\""));
+        assertTrue(runbook.contains("deploy/README.md"));
+        assertTrue(runbook.contains("确认旧版本与当前 Flyway schema 向前兼容"));
+        assertTrue(runbook.contains("ROLLBACK_SCHEMA_APPROVED"));
         assertFalse(runbook.contains("-H \"Authorization: Bearer $ACCESS_TOKEN\""));
         assertFalse(runbook.contains("if sudo ss -lntp | grep"));
+        assertFalse(runbook.contains("sudo nginx -s reload"));
+        assertFalse(runbook.contains("docker compose -f deploy/docker-compose.yml restart nginx"));
+
+        String mutableLatestBackup = String.join("\n",
+                "    drawio-backend:latest \\",
+                "    drawio-backend:before-production-deploy; then"
+        );
+        assertFalse(runbook.contains(mutableLatestBackup));
+
+        int approval = runbook.indexOf("ROLLBACK_SCHEMA_APPROVED");
+        int rollbackRetag = runbook.lastIndexOf("drawio-backend:latest; then");
+        assertTrue(approval >= 0 && rollbackRetag > approval);
     }
 }
