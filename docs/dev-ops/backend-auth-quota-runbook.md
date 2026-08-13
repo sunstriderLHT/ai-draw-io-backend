@@ -420,17 +420,23 @@ if ! mvn -q -pl draw-io-front-harry-app -am -DskipTests package; then
 fi
 
 if sudo docker image inspect drawio-backend:latest >/dev/null 2>&1; then
-  sudo docker tag \
+  if ! sudo docker tag \
     drawio-backend:latest \
-    drawio-backend:before-production-deploy
+    drawio-backend:before-production-deploy; then
+    echo "错误：无法创建回滚镜像标签，停止部署" >&2
+    exit 1
+  fi
 else
   echo "当前没有 drawio-backend:latest，首次部署不生成回滚标签"
 fi
 
-sudo docker build \
+if ! sudo docker build \
   -f draw-io-front-harry-app/Dockerfile \
   -t drawio-backend:latest \
-  draw-io-front-harry-app
+  draw-io-front-harry-app; then
+  echo "错误：生产镜像构建失败，停止部署" >&2
+  exit 1
+fi
 ```
 
 `draw-io-front-harry-app/Dockerfile` 会把 Maven 已测试并打包的 JAR 写入镜像。不要把宿主机上的可变 JAR bind mount 到生产容器。
@@ -468,17 +474,31 @@ test "$(stat -c '%a' .env)" = "600"
 
 ### 12.3 启动后端
 
-先检查最终配置；输出只用于核对服务、网络和端口，不要分享包含敏感环境变量的完整输出：
+先确认 Compose 文件能成功解析且服务名为 `backend`。该命令本身不验证运行时网络成员或宿主机监听端口，网络和端口必须按下一节的实际状态检查：
 
 ```bash
-sudo docker compose --env-file .env \
-  -f docker-compose-production.yml config --services
+if ! compose_services="$(sudo docker compose --env-file .env \
+  -f docker-compose-production.yml config --services)"; then
+  echo "错误：生产 Compose 无法解析，停止部署" >&2
+  exit 1
+fi
 
-sudo docker compose --env-file .env \
-  -f docker-compose-production.yml up -d backend
+if [ "$compose_services" != "backend" ]; then
+  echo "错误：生产 Compose 服务清单不符合预期，停止部署" >&2
+  exit 1
+fi
 
-sudo docker compose --env-file .env \
-  -f docker-compose-production.yml ps backend
+if ! sudo docker compose --env-file .env \
+  -f docker-compose-production.yml up -d backend; then
+  echo "错误：后端容器启动失败，停止部署" >&2
+  exit 1
+fi
+
+if ! sudo docker compose --env-file .env \
+  -f docker-compose-production.yml ps backend; then
+  echo "错误：无法读取后端容器状态" >&2
+  exit 1
+fi
 ```
 
 该命令可能重建 `drawio-backend` 容器，但不会执行 `down`，也不会删除卷或外部网络。
@@ -489,26 +509,38 @@ sudo docker compose --env-file .env \
 
 ```bash
 for network in deploy_app software_my-network; do
-  sudo docker network inspect "$network" \
-    --format '{{range $id, $container := .Containers}}{{println $container.Name}}{{end}}' \
-    | grep -Fx drawio-backend
+  if ! network_members="$(sudo docker network inspect "$network" \
+    --format '{{range $id, $container := .Containers}}{{println $container.Name}}{{end}}')"; then
+    echo "错误：无法检查 Docker 网络 $network" >&2
+    exit 1
+  fi
+
+  if ! printf '%s\n' "$network_members" | grep -Fx drawio-backend >/dev/null; then
+    echo "错误：drawio-backend 未加入 $network" >&2
+    exit 1
+  fi
 done
 ```
 
 从 `deploy_app` 内部访问受保护接口。缺少 JWT 时应返回 HTTP 401，响应类型和正文应为 JSON：
 
 ```bash
-sudo docker run --rm --network deploy_app curlimages/curl:8.10.1 \
-  -sS -D - \
-  http://drawio-backend:8091/api/v1/query_ai_agent_config_list
-```
+if ! unauth_response="$(sudo docker run --rm --network deploy_app \
+  curlimages/curl:8.10.1 \
+  -sS -w '\nSTATUS=%{http_code}\nTYPE=%{content_type}\n' \
+  http://drawio-backend:8091/api/v1/query_ai_agent_config_list)"; then
+  echo "错误：内部未鉴权请求失败" >&2
+  exit 1
+fi
 
-预期响应包含：
+printf '%s\n' "$unauth_response" | grep -Fx 'STATUS=401' >/dev/null \
+  || { echo "错误：未鉴权请求没有返回 401" >&2; exit 1; }
+printf '%s\n' "$unauth_response" | grep -E '^TYPE=application/json' >/dev/null \
+  || { echo "错误：401 响应不是 JSON" >&2; exit 1; }
+printf '%s\n' "$unauth_response" | grep -F '"code":"AUTH_TOKEN_INVALID"' >/dev/null \
+  || { echo "错误：401 JSON 缺少 AUTH_TOKEN_INVALID" >&2; exit 1; }
 
-```text
-HTTP/1.1 401
-Content-Type: application/json
-{"code":"AUTH_TOKEN_INVALID","info":"登录状态无效或已过期","data":null}
+echo "内部未鉴权请求通过：STATUS=401，JSON AUTH_TOKEN_INVALID"
 ```
 
 确认宿主机没有监听 `8091`：
@@ -524,19 +556,32 @@ fi
 
 ### 12.5 验证启动、迁移、Mapper 和额度回收任务
 
-查看本次启动日志，确认 Flyway 和 Spring Boot 正常启动：
+查看本次启动日志，确认 Flyway 和 Spring Boot 正常启动。任一标志缺失都会停止验收：
 
 ```bash
-sudo docker compose --env-file .env \
-  -f docker-compose-production.yml logs --since 10m backend \
-  | grep -E 'Successfully applied|Schema .* is up to date|Started Application'
+if ! startup_logs="$(sudo docker compose --env-file .env \
+  -f docker-compose-production.yml logs --since 10m backend)"; then
+  echo "错误：无法读取后端日志" >&2
+  exit 1
+fi
+
+printf '%s\n' "$startup_logs" \
+  | grep -E 'Successfully applied|Schema .* is up to date' >/dev/null \
+  || { echo "错误：未找到 Flyway 成功标志" >&2; exit 1; }
+printf '%s\n' "$startup_logs" | grep -F 'Started Application' >/dev/null \
+  || { echo "错误：未找到应用启动成功标志" >&2; exit 1; }
 ```
 
 至少等待一个 `AI_RESERVATION_RECOVERY_INTERVAL`，再确认 MyBatis Mapper 和额度回收定时任务没有异常：
 
 ```bash
-if sudo docker compose --env-file .env \
-  -f docker-compose-production.yml logs --since 10m backend \
+if ! recovery_logs="$(sudo docker compose --env-file .env \
+  -f docker-compose-production.yml logs --since 10m backend)"; then
+  echo "错误：无法读取额度回收任务日志" >&2
+  exit 1
+fi
+
+if printf '%s\n' "$recovery_logs" \
   | grep -E 'BindingException|Invalid bound statement|Error parsing Mapper XML|Unexpected error occurred in scheduled task'; then
   echo "错误：Mapper 加载或额度回收任务异常" >&2
   exit 1
@@ -547,18 +592,48 @@ fi
 
 同时保留一次鉴权成功后的额度查询或聊天验收记录，确认数据库 Mapper 能执行真实读写；不要只根据容器处于 `Up` 状态判断部署成功。
 
-下面的命令从终端静默读取 Supabase Access Token，通过内部网络查询额度，并在请求完成后立即清除 shell 变量：
+下面的命令从终端静默读取 Supabase Access Token，并写入权限为 `600` 的临时 curl 配置。配置通过标准输入传入容器，因此 Token 不会出现在 `docker run` 的命令参数或容器的 `Config.Cmd` 中。请求完成或脚本中断时都会清除临时文件和 shell 变量：
 
 ```bash
+curl_config="$(mktemp)"
+chmod 600 "$curl_config"
+
+cleanup_quota_auth() {
+  rm -f "$curl_config"
+  unset ACCESS_TOKEN
+}
+trap cleanup_quota_auth EXIT HUP INT TERM
+
 read -r -s -p 'Supabase Access Token: ' ACCESS_TOKEN
 printf '\n'
-
-sudo docker run --rm --network deploy_app curlimages/curl:8.10.1 \
-  -sS -D - \
-  -H "Authorization: Bearer $ACCESS_TOKEN" \
-  http://drawio-backend:8091/api/v1/quota
-
+printf 'header = "Authorization: Bearer %s"\n' "$ACCESS_TOKEN" >"$curl_config"
 unset ACCESS_TOKEN
+
+if ! quota_response="$(sudo docker run --rm -i --network deploy_app \
+  curlimages/curl:8.10.1 \
+  --config - \
+  -sS -w '\nSTATUS=%{http_code}\nTYPE=%{content_type}\n' \
+  http://drawio-backend:8091/api/v1/quota <"$curl_config")"; then
+  echo "错误：内部鉴权额度请求失败" >&2
+  exit 1
+fi
+
+cleanup_quota_auth
+trap - EXIT HUP INT TERM
+
+printf '%s\n' "$quota_response" | grep -Fx 'STATUS=200' >/dev/null \
+  || { echo "错误：额度接口没有返回 200" >&2; exit 1; }
+printf '%s\n' "$quota_response" | grep -E '^TYPE=application/json' >/dev/null \
+  || { echo "错误：额度接口响应不是 JSON" >&2; exit 1; }
+printf '%s\n' "$quota_response" | grep -F '"code":"0000"' >/dev/null \
+  || { echo "错误：额度接口没有返回成功业务码" >&2; exit 1; }
+
+for field in freeGranted purchasedGranted consumed reserved remaining; do
+  printf '%s\n' "$quota_response" | grep -F "\"$field\"" >/dev/null \
+    || { echo "错误：额度响应缺少 $field" >&2; exit 1; }
+done
+
+echo "内部额度请求通过：STATUS=200，JSON 字段完整"
 ```
 
 预期为 HTTP 200 JSON，且 `data` 中包含 `freeGranted`、`purchasedGranted`、`consumed`、`reserved` 和 `remaining`。
@@ -570,18 +645,30 @@ unset ACCESS_TOKEN
 ```bash
 cd /home/ubuntu/drawio-backend
 
-sudo docker image inspect \
-  drawio-backend:before-production-deploy >/dev/null
+if ! sudo docker image inspect \
+  drawio-backend:before-production-deploy >/dev/null 2>&1; then
+  echo "错误：回滚镜像不存在，停止回滚" >&2
+  exit 1
+fi
 
-sudo docker tag \
+if ! sudo docker tag \
   drawio-backend:before-production-deploy \
-  drawio-backend:latest
+  drawio-backend:latest; then
+  echo "错误：无法恢复回滚镜像标签，停止回滚" >&2
+  exit 1
+fi
 
-sudo docker compose --env-file .env \
-  -f docker-compose-production.yml up -d --no-deps --force-recreate backend
+if ! sudo docker compose --env-file .env \
+  -f docker-compose-production.yml up -d --no-deps --force-recreate backend; then
+  echo "错误：回滚容器启动失败" >&2
+  exit 1
+fi
 
-sudo docker compose --env-file .env \
-  -f docker-compose-production.yml ps backend
+if ! sudo docker compose --env-file .env \
+  -f docker-compose-production.yml ps backend; then
+  echo "错误：无法读取回滚后的容器状态" >&2
+  exit 1
+fi
 ```
 
 镜像回滚不等于数据库回滚。若新版本已执行 Flyway，必须先确认旧版本与当前 schema 兼容；不要手工删除 Flyway 记录或额度表。
