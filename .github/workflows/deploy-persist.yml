@@ -18,6 +18,19 @@ concurrency:
 jobs:
   validate:
     runs-on: ubuntu-latest
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: xfg_frame_archetype
+          MYSQL_ROOT_PASSWORD: 123456
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -uroot -p123456"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=12
+        ports:
+          - 3306:3306
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-java@v4
@@ -25,7 +38,18 @@ jobs:
           distribution: temurin
           java-version: '17'
           cache: maven
-      - run: mvn -B -ntp test
+      - name: Run the offline backend verification suite
+        env:
+          SPRING_DATASOURCE_URL: jdbc:mysql://127.0.0.1:3306/xfg_frame_archetype?useUnicode=true&characterEncoding=utf8&serverTimezone=UTC&useSSL=false
+          SPRING_DATASOURCE_USERNAME: root
+          SPRING_DATASOURCE_PASSWORD: 123456
+          SUPABASE_ISSUER: https://test-project.invalid/auth/v1
+          SUPABASE_JWKS_URI: http://127.0.0.1:9/jwks
+          AI_MODEL_API_KEY: test-only-placeholder
+        run: >-
+          mvn -B -ntp -pl draw-io-front-harry-app -am
+          -Dtest=DependencySmokeTest,SupabaseSecurityTest,SupabaseClaimsValidatorTest,TrustedUserIdentityTest,AiQuotaServiceTest,MySqlAiQuotaRepositoryTest,MeteredSynchronousChatTest,MeteredStreamingChatTest,AiApiContractTest,AgentConfigSecretSafetyTest,QuotaReservationRecoveryJobTest,AgentStreamSubscriptionTest,AgentOutputEventMapperTest
+          test
 
   deploy:
     needs: validate
@@ -65,4 +89,3 @@ jobs:
           ssh -i ~/.ssh/id_ed25519 -o BatchMode=yes -o StrictHostKeyChecking=yes \
             -p "$BACKEND_PRODUCTION_PORT" "backend-deploy@$BACKEND_PRODUCTION_HOST" \
             'sudo /usr/local/sbin/deploy-drawio-backend'
-
