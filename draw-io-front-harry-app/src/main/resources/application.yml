@@ -7,3 +7,5 @@ spring:
 ai:
   quota:
     free: ${AI_QUOTA_FREE:3}
+    reservation-timeout: ${AI_RESERVATION_TIMEOUT:PT10M}
+    recovery-interval: ${AI_RESERVATION_RECOVERY_INTERVAL:PT1M}

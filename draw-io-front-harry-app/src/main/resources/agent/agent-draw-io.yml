@@ -12,7 +12,7 @@ ai:
           module:
             ai-api:
               base-uri: "${AI_BASE_URI}"
-              api-key: "${AI_API_KEY}"
+              api-key: "${AI_MODEL_API_KEY}"
               completions-path: "${AI_COMPLETIONS_PATH:chat/completions}"
               embeddings-path: "${AI_EMBEDDINGS_PATH:embeddings}"
             chat-model:
