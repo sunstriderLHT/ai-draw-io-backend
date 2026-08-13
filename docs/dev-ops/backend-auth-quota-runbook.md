@@ -385,10 +385,24 @@ Idempotency-Key: <new-canonical-uuid>
 
 ### 12.1 构建发布镜像
 
-先在完成代码检出的构建目录使用 Java 17 打包。只有 Maven 成功后，才允许执行镜像构建：
+先在完成代码检出的构建目录使用 Java 17 打包。执行前在当前 shell 中把 `JAVA_HOME` 设置为服务器上的 JDK 17 绝对目录；下面的门禁会拒绝未设置、不可执行或不是 Java 17 的目录。只有 Maven 成功后，才允许备份运行版本并构建镜像：
 
 ```bash
-export JAVA_HOME=<jdk-17-directory>
+if [ -z "${JAVA_HOME:-}" ] || [ ! -x "$JAVA_HOME/bin/java" ]; then
+  echo "错误：请先把 JAVA_HOME 设置为有效的 JDK 17 绝对目录" >&2
+  exit 1
+fi
+
+if ! java_version="$("$JAVA_HOME/bin/java" -version 2>&1)"; then
+  echo "错误：无法执行 JAVA_HOME 中的 Java" >&2
+  exit 1
+fi
+
+case "$java_version" in
+  *'version "17.'*) ;;
+  *) echo "错误：生产构建必须使用 Java 17" >&2; exit 1 ;;
+esac
+
 export PATH="$JAVA_HOME/bin:$PATH"
 
 if ! mvn -q -pl draw-io-front-harry-app -am -DskipTests package; then
@@ -396,37 +410,51 @@ if ! mvn -q -pl draw-io-front-harry-app -am -DskipTests package; then
   exit 1
 fi
 
-if ! running_state="$(sudo docker inspect \
-  --format '{{.State.Running}}' drawio-backend)"; then
-  echo "错误：无法检查当前运行的 drawio-backend，停止部署" >&2
+if ! existing_container="$(sudo docker container ls -a \
+  --filter 'name=^/drawio-backend$' \
+  --format '{{.Names}}')"; then
+  echo "错误：无法查询现有后端容器，停止部署" >&2
   exit 1
 fi
 
-if [ "$running_state" != "true" ]; then
-  echo "错误：drawio-backend 当前未运行，无法创建可信回滚标签" >&2
-  exit 1
-fi
+if [ -z "$existing_container" ]; then
+  echo "FIRST_DEPLOY_NO_ROLLBACK_SOURCE：未找到旧容器，本次按首次部署继续"
+elif [ "$existing_container" = "drawio-backend" ]; then
+  if ! running_state="$(sudo docker inspect \
+    --format '{{.State.Running}}' drawio-backend)"; then
+    echo "错误：无法检查当前 drawio-backend 状态，停止部署" >&2
+    exit 1
+  fi
 
-if ! running_image_id="$(sudo docker inspect \
-  --format '{{.Image}}' drawio-backend)"; then
-  echo "错误：无法读取当前运行容器的不可变镜像 ID，停止部署" >&2
-  exit 1
-fi
+  if [ "$running_state" != "true" ]; then
+    echo "错误：drawio-backend 当前未运行，无法创建可信回滚标签" >&2
+    exit 1
+  fi
 
-if [ -z "$running_image_id" ]; then
-  echo "错误：当前运行容器的镜像 ID 为空，停止部署" >&2
-  exit 1
-fi
+  if ! running_image_id="$(sudo docker inspect \
+    --format '{{.Image}}' drawio-backend)"; then
+    echo "错误：无法读取当前运行容器的不可变镜像 ID，停止部署" >&2
+    exit 1
+  fi
 
-if sudo docker image inspect "$running_image_id" >/dev/null 2>&1; then
-  if ! sudo docker tag \
-    "$running_image_id" \
-    drawio-backend:before-production-deploy; then
-    echo "错误：无法创建回滚镜像标签，停止部署" >&2
+  if [ -z "$running_image_id" ]; then
+    echo "错误：当前运行容器的镜像 ID 为空，停止部署" >&2
+    exit 1
+  fi
+
+  if sudo docker image inspect "$running_image_id" >/dev/null 2>&1; then
+    if ! sudo docker tag \
+      "$running_image_id" \
+      drawio-backend:before-production-deploy; then
+      echo "错误：无法创建回滚镜像标签，停止部署" >&2
+      exit 1
+    fi
+  else
+    echo "错误：当前运行容器的镜像 ID 不可用，停止部署" >&2
     exit 1
   fi
 else
-  echo "错误：当前运行容器的镜像 ID 不可用，停止部署" >&2
+  echo "错误：容器查询返回了非预期名称，停止部署" >&2
   exit 1
 fi
 
@@ -443,12 +471,23 @@ fi
 
 ### 12.2 准备部署目录和私网
 
-把仓库中的 `docs/dev-ops/docker-compose-production.yml` 放到部署目录，并创建日志目录：
+把仓库中的 `docs/dev-ops/docker-compose-production.yml` 放到部署目录，并创建日志目录。先把 `RELEASE_DIRECTORY` 设置为已验证发布目录的绝对路径；不要使用 `CHANGE_ME`：
 
 ```bash
+RELEASE_DIRECTORY="${RELEASE_DIRECTORY:-}"
+if [ -z "$RELEASE_DIRECTORY" ] || [ "$RELEASE_DIRECTORY" = "CHANGE_ME" ]; then
+  echo "错误：请先设置有效的 RELEASE_DIRECTORY" >&2
+  exit 1
+fi
+
+if [ ! -f "$RELEASE_DIRECTORY/docs/dev-ops/docker-compose-production.yml" ]; then
+  echo "错误：发布目录中不存在生产 Compose 文件" >&2
+  exit 1
+fi
+
 cd /home/ubuntu/drawio-backend
 install -m 644 \
-  <release-directory>/docs/dev-ops/docker-compose-production.yml \
+  "$RELEASE_DIRECTORY/docs/dev-ops/docker-compose-production.yml" \
   ./docker-compose-production.yml
 mkdir -p ./log
 ```
@@ -463,10 +502,18 @@ sudo docker network inspect software_my-network >/dev/null 2>&1 \
   || sudo docker network create software_my-network
 ```
 
-在 Compose 文件旁创建或复制服务器专用 `.env`，不要在终端回显其中的值：
+在 Compose 文件旁创建或复制服务器专用 `.env`，不要在终端回显其中的值。先把 `SERVER_PRIVATE_ENV_SOURCE` 设置为服务器私密环境文件的绝对路径；不要使用 `CHANGE_ME`：
 
 ```bash
-install -m 600 <server-private-env-source> ./.env
+SERVER_PRIVATE_ENV_SOURCE="${SERVER_PRIVATE_ENV_SOURCE:-}"
+if [ -z "$SERVER_PRIVATE_ENV_SOURCE" ] \
+  || [ "$SERVER_PRIVATE_ENV_SOURCE" = "CHANGE_ME" ] \
+  || [ ! -f "$SERVER_PRIVATE_ENV_SOURCE" ]; then
+  echo "错误：请先设置有效的 SERVER_PRIVATE_ENV_SOURCE" >&2
+  exit 1
+fi
+
+install -m 600 "$SERVER_PRIVATE_ENV_SOURCE" ./.env
 test "$(stat -c '%a' .env)" = "600"
 ```
 

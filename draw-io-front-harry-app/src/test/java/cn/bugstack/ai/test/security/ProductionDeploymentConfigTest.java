@@ -54,10 +54,18 @@ public class ProductionDeploymentConfigTest {
         assertTrue(runbook.contains("deploy/README.md"));
         assertTrue(runbook.contains("确认旧版本与当前 Flyway schema 向前兼容"));
         assertTrue(runbook.contains("ROLLBACK_SCHEMA_APPROVED"));
+        assertTrue(runbook.contains("existing_container=\"$(sudo docker container ls -a"));
+        assertTrue(runbook.contains("FIRST_DEPLOY_NO_ROLLBACK_SOURCE"));
+        assertTrue(runbook.contains("elif [ \"$existing_container\" = \"drawio-backend\" ]"));
+        assertTrue(runbook.contains("RELEASE_DIRECTORY=\"${RELEASE_DIRECTORY:-}\""));
+        assertTrue(runbook.contains("SERVER_PRIVATE_ENV_SOURCE=\"${SERVER_PRIVATE_ENV_SOURCE:-}\""));
         assertFalse(runbook.contains("-H \"Authorization: Bearer $ACCESS_TOKEN\""));
         assertFalse(runbook.contains("if sudo ss -lntp | grep"));
         assertFalse(runbook.contains("sudo nginx -s reload"));
         assertFalse(runbook.contains("docker compose -f deploy/docker-compose.yml restart nginx"));
+        assertFalse(runbook.contains("export JAVA_HOME=<jdk-17-directory>"));
+        assertFalse(runbook.contains("<release-directory>"));
+        assertFalse(runbook.contains("<server-private-env-source>"));
 
         String mutableLatestBackup = String.join("\n",
                 "    drawio-backend:latest \\",
