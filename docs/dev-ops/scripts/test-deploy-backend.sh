@@ -6,6 +6,7 @@ DEPLOY_SCRIPT="$SCRIPT_DIR/deploy-backend.sh"
 INSTALL_SCRIPT="$SCRIPT_DIR/install-backend-deploy-user.sh"
 WORKFLOW="$SCRIPT_DIR/../../../.github/workflows/deploy-persist.yml"
 COMPOSE_FILE="$SCRIPT_DIR/../docker-compose-production.yml"
+DOCKERFILE="$SCRIPT_DIR/../../../draw-io-front-harry-app/Dockerfile"
 
 grep -Fq 'docker/login-action@v3' "$WORKFLOW"
 grep -Fq 'docker/build-push-action@v6' "$WORKFLOW"
@@ -29,3 +30,8 @@ fi
 
 grep -Fq 'DRAWIO_BACKEND_IMAGE' "$COMPOSE_FILE"
 grep -Fq '/etc/drawio-backend-deploy.conf' "$INSTALL_SCRIPT"
+grep -Fq 'FROM eclipse-temurin:17-jre-jammy' "$DOCKERFILE"
+if grep -Fq 'MAINTAINER ' "$DOCKERFILE"; then
+  echo "Dockerfile must use OCI labels instead of the deprecated MAINTAINER instruction" >&2
+  exit 1
+fi

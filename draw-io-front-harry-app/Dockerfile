@@ -1,8 +1,7 @@
-# 基础镜像，可以先执行 docker pull openjdk:17-jdk-slim
-FROM openjdk:17-jdk-slim
+# 基础镜像
+FROM eclipse-temurin:17-jre-jammy
 
-# 作者
-MAINTAINER xiaofuge
+LABEL org.opencontainers.image.authors="xiaofuge"
 
 # 配置
 ENV PARAMS=""
