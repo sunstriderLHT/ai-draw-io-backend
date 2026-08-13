@@ -12,8 +12,8 @@ Fix fenced JSON routing without placing Draw.io response policy inside the gener
 
 Keep the framework change limited to reusable session-state parsing:
 
-- `ConditionalAgent` accepts plain JSON, complete Markdown `json` fences, and structured state values.
-- Malformed, incomplete, prose-prefixed, and non-JSON fenced values remain invalid and fail closed.
+- `ConditionalAgent` accepts plain JSON, structured state values, and one complete Markdown `json` fence even when the LLM adds explanatory prose before or after it.
+- Malformed, incomplete, non-JSON fenced, and multiple-fence values remain invalid and fail closed.
 - `FinalResponseAgent` remains a YAML-configured generic LLM Agent.
 - The `{type, content}` response rules and Draw.io-specific state keys remain in `agent-draw-io.yml` rather than Java classes.
 - Remove the Draw.io-specific workflow type, assembly node, deterministic Agent, and their specialized tests.
@@ -28,7 +28,7 @@ RequestAnalystAgent
 
 ## Testing
 
-- A fenced `READY` result must execute conditional children.
+- A fenced `READY` result, including the real prose-prefixed LLM response shape, must execute conditional children.
 - `NEED_MORE_INFO`, malformed JSON, and missing state must skip drawing children.
 - YAML must retain the LLM `FinalResponseAgent` and the sequential root workflow.
 - The final instruction must tolerate optional drawing state after a short circuit.
